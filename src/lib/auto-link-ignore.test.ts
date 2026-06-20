@@ -96,6 +96,34 @@ describe("ignore matching", () => {
 })
 
 describe("add ignore rules", () => {
+  it("adds, returns, and persists a new ignored term", async () => {
+    mockReadFile.mockResolvedValue(JSON.stringify({ terms: [], pairs: [] }))
+
+    await expect(addIgnoredTerm("/project", "  Alpha  ")).resolves.toEqual({
+      terms: ["Alpha"],
+      pairs: [],
+    })
+    expect(mockWriteFile).toHaveBeenCalledWith(
+      "/project/.llm-wiki/auto-link-ignore.json",
+      '{\n  "terms": [\n    "Alpha"\n  ],\n  "pairs": []\n}\n',
+    )
+  })
+
+  it("adds, returns, and persists a new ignored pair", async () => {
+    mockReadFile.mockResolvedValue(JSON.stringify({ terms: [], pairs: [] }))
+
+    await expect(
+      addIgnoredPair("/project", { term: "  EMP ", target: " early-emp  " }),
+    ).resolves.toEqual({
+      terms: [],
+      pairs: [{ term: "EMP", target: "early-emp" }],
+    })
+    expect(mockWriteFile).toHaveBeenCalledWith(
+      "/project/.llm-wiki/auto-link-ignore.json",
+      '{\n  "terms": [],\n  "pairs": [\n    {\n      "term": "EMP",\n      "target": "early-emp"\n    }\n  ]\n}\n',
+    )
+  })
+
   it("does not duplicate an existing ignored term", async () => {
     mockReadFile.mockResolvedValue(
       JSON.stringify({ terms: [" Alpha "], pairs: [] }),
