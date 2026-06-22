@@ -435,7 +435,7 @@ export function PreviewPanel() {
                 <TooltipTrigger
                   render={
                     <Button
-                      variant="ghost"
+                      variant="outline"
                       size="icon-xs"
                       aria-label="Auto Link"
                       disabled={
