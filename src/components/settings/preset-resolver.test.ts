@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { LLM_PRESETS } from "./llm-presets"
-import { resolveConfig } from "./preset-resolver"
+import { disabledLlmConfig, resolveConfig } from "./preset-resolver"
+import { hasUsableLlm } from "@/lib/has-usable-llm"
 import type { LlmConfig } from "@/stores/wiki-store"
 import type { LlmPreset } from "./llm-presets"
 
@@ -28,6 +29,16 @@ describe("resolveConfig", () => {
       "deepseek-chat",
       "deepseek-reasoner",
     ])
+  })
+
+  it("exposes Atlas Cloud as an OpenAI-compatible chat-completions preset", () => {
+    const atlas = LLM_PRESETS.find((preset) => preset.id === "atlascloud")
+
+    expect(atlas?.provider).toBe("custom")
+    expect(atlas?.baseUrl).toBe("https://api.atlascloud.ai/v1")
+    expect(atlas?.apiMode).toBe("chat_completions")
+    expect(atlas?.defaultModel).toBe("deepseek-ai/deepseek-v4-pro")
+    expect(atlas?.suggestedModels).toContain("deepseek-ai/deepseek-v4-pro")
   })
 
   it("keeps Xiaomi MiMo presets aligned with current official and Token Plan endpoints", () => {
@@ -161,5 +172,34 @@ describe("resolveConfig", () => {
     )
 
     expect(resolved.localCliIsolation).toBe(false)
+  })
+})
+
+describe("disabledLlmConfig", () => {
+  it("turns a keyless previous provider into an unusable LLM config", () => {
+    const cleared = disabledLlmConfig(fallbackConfig({
+      provider: "claude-code",
+      apiKey: "",
+      model: "sonnet",
+    }))
+
+    expect(cleared.provider).toBe("openai")
+    expect(cleared.apiKey).toBe("")
+    expect(hasUsableLlm(cleared)).toBe(false)
+  })
+
+  it("does not erase provider-specific saved details from the fallback object shape", () => {
+    const cleared = disabledLlmConfig(fallbackConfig({
+      provider: "codex-cli",
+      model: "gpt-5",
+      maxContextSize: 123456,
+      customEndpoint: "http://local.test/v1",
+    }))
+
+    expect(cleared.model).toBe("gpt-5")
+    expect(cleared.maxContextSize).toBe(123456)
+    expect(cleared.customEndpoint).toBe("http://local.test/v1")
+    expect(cleared.provider).toBe("openai")
+    expect(hasUsableLlm(cleared)).toBe(false)
   })
 })

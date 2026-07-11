@@ -1,7 +1,9 @@
 pub mod claude_cli;
 mod cli_resolver;
 pub mod codex_cli;
+pub mod external_search;
 pub mod extract_images;
+pub mod file_history;
 pub mod file_sync;
 pub mod fs;
 pub mod project;

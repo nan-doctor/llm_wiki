@@ -44,8 +44,7 @@ export function PreviewPanel() {
   const externalPreview = useWikiStore((s) => s.externalPreview)
   const llmConfig = useWikiStore((s) => s.llmConfig)
   const setFileContent = useWikiStore((s) => s.setFileContent)
-  const setSelectedFile = useWikiStore((s) => s.setSelectedFile)
-
+  const closePreview = useWikiStore((s) => s.closePreview)
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingWriteRef = useRef<Promise<void> | null>(null)
   const lastLoadedRef = useRef("")
@@ -387,12 +386,12 @@ export function PreviewPanel() {
     try {
       await flushPendingSave(selectedFile)
       if (useWikiStore.getState().selectedFile === selectedFile) {
-        setSelectedFile(null)
+        closePreview()
       }
     } catch (error) {
       console.error("Failed to save before closing preview:", error)
     }
-  }, [flushPendingSave, selectedFile, setSelectedFile])
+  }, [closePreview, flushPendingSave, selectedFile])
 
   useEffect(() => {
     return () => {

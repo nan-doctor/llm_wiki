@@ -21,6 +21,9 @@ const CONTENT_TOKEN_WEIGHT: f64 = 1.0;
 const SNIPPET_CONTEXT: usize = 80;
 const SEARCH_EMBEDDING_TIMEOUT_SECS: u64 = 8;
 const MAX_SEARCH_FILES: usize = 10_000;
+const MIN_GRAPH_RESULT_RATIO: f64 = 0.15;
+const MAX_GRAPH_RESULT_RATIO: f64 = 0.30;
+const MAX_GRAPH_SEEDS: usize = 20;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -42,6 +45,8 @@ pub struct ProjectSearchResult {
     pub images: Vec<SearchImageRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub graph_related_to: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,6 +56,15 @@ pub struct ProjectSearchResponse {
     pub results: Vec<ProjectSearchResult>,
     pub token_hits: usize,
     pub vector_hits: usize,
+    pub graph_hits: usize,
+}
+
+#[derive(Debug, Clone)]
+struct GraphPage {
+    path: String,
+    title: String,
+    content: String,
+    links: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,7 +74,7 @@ pub struct SearchEmbeddingConfig {
     pub endpoint: String,
     pub api_key: String,
     pub model: String,
-    pub output_dimensionality: Option<u32>,
+    pub output_dimensionality: Option<f64>,
     /// Extra HTTP headers to send with every embedding request, e.g.
     /// `X-Model-Provider-Id: siliconflow` for the mify gateway.
     /// Reserved names (Authorization, Content-Type, Host,
@@ -94,6 +108,18 @@ pub async fn search_project(
     .await
 }
 
+#[tauri::command]
+pub async fn embedding_fetch(
+    text: String,
+    cfg: SearchEmbeddingConfig,
+    max_retries: Option<usize>,
+) -> Result<Vec<f32>, String> {
+    run_guarded_async("embedding_fetch", async move {
+        fetch_embedding_with_retry(&text, &cfg, max_retries.unwrap_or(3)).await
+    })
+    .await
+}
+
 pub async fn resolve_query_embedding(
     query: &str,
     explicit_embedding: Option<Vec<f32>>,
@@ -108,7 +134,7 @@ pub async fn resolve_query_embedding(
     if !cfg.enabled || cfg.endpoint.trim().is_empty() || cfg.model.trim().is_empty() {
         return Ok(None);
     }
-    match fetch_embedding(query, &cfg).await {
+    match fetch_embedding_with_retry(query, &cfg, 0).await {
         Ok(embedding) => validate_query_embedding(embedding).map(Some),
         Err(err) => {
             eprintln!("[Search] embedding disabled for this request: {err}");
@@ -147,6 +173,7 @@ pub async fn search_project_inner(
     let query_phrase = trim_query_punctuation(&query.to_lowercase());
     let mut results = Vec::new();
     let mut page_paths_by_stem = BTreeMap::new();
+    let mut graph_pages = BTreeMap::new();
 
     let wiki_root = Path::new(&project_path).join("wiki");
     if wiki_root.exists() {
@@ -180,7 +207,16 @@ pub async fn search_project_inner(
                     );
                 }
             }
-            if let Some(hit) = score_file(
+            let relative_path = relative_to_project(&project_path, entry.path());
+            let title = extract_title(
+                &content,
+                entry
+                    .path()
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or_default(),
+            );
+            let hit = score_file(
                 &project_path,
                 entry.path(),
                 &content,
@@ -188,7 +224,17 @@ pub async fn search_project_inner(
                 &query_phrase,
                 &query,
                 include_content,
-            ) {
+            );
+            graph_pages.insert(
+                normalize_path(&relative_path),
+                GraphPage {
+                    path: relative_path,
+                    title,
+                    links: extract_wikilinks(&content),
+                    content,
+                },
+            );
+            if let Some(hit) = hit {
                 results.push(hit);
             }
         }
@@ -237,23 +283,9 @@ pub async fn search_project_inner(
         }
     }
 
-    if vector_hits == 0 {
-        results.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.path.cmp(&b.path))
-        });
-        results.truncate(limit);
-        return Ok(ProjectSearchResponse {
-            mode: "keyword".to_string(),
-            token_hits: token_rank.len(),
-            vector_hits,
-            results,
-        });
+    if vector_hits > 0 {
+        apply_rrf_scores(&mut results, &token_rank, &vector_rank, &vector_score);
     }
-
-    apply_rrf_scores(&mut results, &token_rank, &vector_rank, &vector_score);
 
     results.sort_by(|a, b| {
         b.score
@@ -261,12 +293,19 @@ pub async fn search_project_inner(
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a.path.cmp(&b.path))
     });
-    results.truncate(limit);
+    let graph_hits = blend_graph_results(
+        &mut results,
+        &graph_pages,
+        limit,
+        vector_hits,
+        include_content,
+    );
 
     Ok(ProjectSearchResponse {
-        mode: search_mode(token_rank.is_empty(), vector_hits).to_string(),
+        mode: search_mode(token_rank.is_empty(), vector_hits, graph_hits).to_string(),
         token_hits: token_rank.len(),
         vector_hits,
+        graph_hits,
         results,
     })
 }
@@ -294,8 +333,193 @@ fn apply_rrf_scores(
     }
 }
 
-fn search_mode(token_rank_empty: bool, vector_hits: usize) -> &'static str {
-    if vector_hits == 0 {
+/// Reserve 15-30% of the final window for one-hop graph expansion. A full
+/// vector window leaves the minimum graph share; sparse vector retrieval moves
+/// progressively toward the maximum. Missing graph candidates automatically
+/// return their slots to keyword/vector results.
+fn graph_result_quota(limit: usize, vector_hits: usize) -> usize {
+    if limit < 2 {
+        return 0;
+    }
+    let vector_coverage = vector_hits.min(limit) as f64 / limit as f64;
+    let ratio = MAX_GRAPH_RESULT_RATIO
+        - (MAX_GRAPH_RESULT_RATIO - MIN_GRAPH_RESULT_RATIO) * vector_coverage;
+    ((limit as f64 * ratio).ceil() as usize).clamp(1, limit - 1)
+}
+
+fn blend_graph_results(
+    ranked_results: &mut Vec<ProjectSearchResult>,
+    pages: &BTreeMap<String, GraphPage>,
+    limit: usize,
+    vector_hits: usize,
+    include_content: bool,
+) -> usize {
+    if ranked_results.is_empty() || pages.is_empty() {
+        ranked_results.truncate(limit);
+        return 0;
+    }
+
+    let mut aliases = BTreeMap::<String, String>::new();
+    for (normalized_path, page) in pages {
+        let wiki_relative = page.path.strip_prefix("wiki/").unwrap_or(&page.path);
+        let stem = file_stem(&page.path);
+        for alias in [
+            page.path.as_str(),
+            wiki_relative,
+            stem.as_str(),
+            page.title.as_str(),
+        ] {
+            aliases.insert(normalize_graph_alias(alias), normalized_path.clone());
+        }
+    }
+
+    let mut adjacency = BTreeMap::<String, BTreeSet<String>>::new();
+    for (source, page) in pages {
+        for link in &page.links {
+            let Some(target) = aliases.get(&normalize_graph_alias(link)) else {
+                continue;
+            };
+            if source == target {
+                continue;
+            }
+            adjacency
+                .entry(source.clone())
+                .or_default()
+                .insert(target.clone());
+            adjacency
+                .entry(target.clone())
+                .or_default()
+                .insert(source.clone());
+        }
+    }
+
+    let seed_paths: Vec<String> = ranked_results
+        .iter()
+        .take(limit.min(MAX_GRAPH_SEEDS))
+        .map(|result| normalize_path(&result.path))
+        .collect();
+    let seed_set: BTreeSet<String> = seed_paths.iter().cloned().collect();
+    let mut candidate_scores = BTreeMap::<String, f64>::new();
+    let mut candidate_seeds = BTreeMap::<String, BTreeSet<String>>::new();
+    for (rank, seed) in seed_paths.iter().enumerate() {
+        let Some(neighbors) = adjacency.get(seed) else {
+            continue;
+        };
+        for neighbor in neighbors {
+            if seed_set.contains(neighbor) {
+                continue;
+            }
+            *candidate_scores.entry(neighbor.clone()).or_default() += 1.0 / (rank + 1) as f64;
+            if let Some(seed_page) = pages.get(seed) {
+                candidate_seeds
+                    .entry(neighbor.clone())
+                    .or_default()
+                    .insert(seed_page.title.clone());
+            }
+        }
+    }
+
+    let mut candidates: Vec<(String, f64)> = candidate_scores.into_iter().collect();
+    candidates.sort_by(|(path_a, score_a), (path_b, score_b)| {
+        score_b
+            .partial_cmp(score_a)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| path_a.cmp(path_b))
+    });
+    candidates.truncate(graph_result_quota(limit, vector_hits));
+    if candidates.is_empty() {
+        ranked_results.truncate(limit);
+        return 0;
+    }
+
+    let selected_paths: BTreeSet<String> =
+        candidates.iter().map(|(path, _)| path.clone()).collect();
+    let mut existing = BTreeMap::<String, ProjectSearchResult>::new();
+    let mut ranked_paths = Vec::new();
+    for result in ranked_results.drain(..) {
+        let path = normalize_path(&result.path);
+        ranked_paths.push(path.clone());
+        existing.insert(path, result);
+    }
+
+    let graph_count = candidates.len();
+    let base_limit = limit.saturating_sub(graph_count);
+    let mut base_results: Vec<ProjectSearchResult> = ranked_paths
+        .iter()
+        .filter(|path| !selected_paths.contains(*path))
+        .filter_map(|path| existing.get(path).cloned())
+        .take(base_limit)
+        .collect();
+
+    for (path, graph_score) in candidates {
+        if let Some(result) = existing.remove(&path) {
+            let mut result = result;
+            result.graph_related_to = candidate_seeds
+                .remove(&path)
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+            base_results.push(result);
+            continue;
+        }
+        let Some(page) = pages.get(&path) else {
+            continue;
+        };
+        let related_titles = candidate_seeds
+            .remove(&path)
+            .unwrap_or_default()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let related = related_titles.join(", ");
+        base_results.push(ProjectSearchResult {
+            path: page.path.clone(),
+            title: page.title.clone(),
+            snippet: format!("Graph neighbor of {related}"),
+            title_match: false,
+            score: graph_score / (RRF_K + 1.0),
+            vector_score: None,
+            images: extract_image_refs(&page.content),
+            content: include_content.then(|| page.content.clone()),
+            graph_related_to: related_titles,
+        });
+    }
+    *ranked_results = base_results;
+    graph_count
+}
+
+fn normalize_graph_alias(value: &str) -> String {
+    value
+        .split('#')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .trim_end_matches(".md")
+        .replace('\\', "/")
+        .replace(' ', "-")
+        .to_lowercase()
+}
+
+fn extract_wikilinks(content: &str) -> Vec<String> {
+    let mut links = Vec::new();
+    let mut rest = content;
+    while let Some(start) = rest.find("[[") {
+        rest = &rest[start + 2..];
+        let Some(end) = rest.find("]]") else {
+            break;
+        };
+        let target = rest[..end].split('|').next().unwrap_or_default().trim();
+        if !target.is_empty() {
+            links.push(target.to_string());
+        }
+        rest = &rest[end + 2..];
+    }
+    links
+}
+
+fn search_mode(token_rank_empty: bool, vector_hits: usize, graph_hits: usize) -> &'static str {
+    if graph_hits > 0 {
+        "hybrid"
+    } else if vector_hits == 0 {
         "keyword"
     } else if token_rank_empty {
         "vector"
@@ -396,6 +620,7 @@ fn materialize_vector_only_results(
                 vector_score: Some(vr.score),
                 images: extract_image_refs(&content),
                 content: include_content.then_some(content),
+                graph_related_to: Vec::new(),
             });
             known.insert(vr.id.clone());
         }
@@ -482,6 +707,7 @@ fn score_file(
         vector_score: None,
         images: extract_image_refs(content),
         content: include_content.then_some(content.to_string()),
+        graph_related_to: Vec::new(),
     })
 }
 
@@ -666,7 +892,59 @@ pub fn extract_image_refs(content: &str) -> Vec<SearchImageRef> {
     out
 }
 
-async fn fetch_embedding(text: &str, cfg: &SearchEmbeddingConfig) -> Result<Vec<f32>, String> {
+async fn fetch_embedding_with_retry(
+    text: &str,
+    cfg: &SearchEmbeddingConfig,
+    max_retries: usize,
+) -> Result<Vec<f32>, String> {
+    let mut current = text.to_string();
+    let mut attempts = 0usize;
+    loop {
+        attempts += 1;
+        match fetch_embedding_once(&current, cfg).await {
+            Ok(embedding) => return Ok(embedding),
+            Err(EmbeddingFetchError::Oversize(message)) => {
+                if attempts <= max_retries
+                    && current.len() > 64
+                    && halve_text_on_char_boundary(&mut current)
+                {
+                    eprintln!(
+                        "[Embedding] auto-halving after oversize error at {} chars; retrying at {} chars ({attempts}/{})",
+                        text.chars().count(),
+                        current.chars().count(),
+                        max_retries + 1
+                    );
+                    continue;
+                }
+                return Err(format!(
+                    "Endpoint rejected input even at {} chars. Lower Settings -> Embedding -> Max Chunk Chars. {message}",
+                    current.len()
+                ));
+            }
+            Err(EmbeddingFetchError::Other(message)) => return Err(message),
+        }
+    }
+}
+
+fn halve_text_on_char_boundary(text: &mut String) -> bool {
+    let char_count = text.chars().count();
+    if char_count <= 1 {
+        return false;
+    }
+    let keep = (char_count / 2).max(1);
+    *text = text.chars().take(keep).collect();
+    true
+}
+
+enum EmbeddingFetchError {
+    Oversize(String),
+    Other(String),
+}
+
+async fn fetch_embedding_once(
+    text: &str,
+    cfg: &SearchEmbeddingConfig,
+) -> Result<Vec<f32>, EmbeddingFetchError> {
     let is_google = is_google_embedding_config(cfg);
     let is_doubao_multimodal = is_doubao_multimodal_embedding_config(cfg);
     let endpoint = if is_google {
@@ -679,9 +957,15 @@ async fn fetch_embedding(text: &str, cfg: &SearchEmbeddingConfig) -> Result<Vec<
             SEARCH_EMBEDDING_TIMEOUT_SECS,
         ))
         .build()
-        .map_err(|e| format!("Embedding HTTP client error: {e}"))?
-        .post(endpoint)
+        .map_err(|e| EmbeddingFetchError::Other(format!("Embedding HTTP client error: {e}")))?
+        .post(&endpoint)
         .header("Content-Type", "application/json");
+    // Browser-based local model servers often require a browser-like
+    // Origin even when the request is routed through Rust. Keep this
+    // reserved so user-supplied extra headers cannot override it.
+    if is_local_or_private_http_endpoint(&endpoint) {
+        req = req.header("Origin", "http://localhost");
+    }
     if !cfg.api_key.trim().is_empty() {
         if is_google {
             req = req.header("x-goog-api-key", cfg.api_key.trim());
@@ -713,19 +997,46 @@ async fn fetch_embedding(text: &str, cfg: &SearchEmbeddingConfig) -> Result<Vec<
         .json(&body)
         .send()
         .await
-        .map_err(|e| format!("Embedding request failed: {e}"))?;
+        .map_err(|e| EmbeddingFetchError::Other(format!("Embedding request failed: {e}")))?;
     let status = resp.status();
-    let data: Value = resp
-        .json()
+    let text = resp
+        .text()
         .await
-        .map_err(|e| format!("Embedding response parse failed: {e}"))?;
+        .map_err(|e| EmbeddingFetchError::Other(format!("Embedding response read failed: {e}")))?;
     if !status.is_success() {
-        return Err(format!(
-            "Embedding API HTTP {status}: {}",
-            data.to_string().chars().take(200).collect::<String>()
-        ));
+        let preview = text.chars().take(200).collect::<String>();
+        if looks_like_oversize_error(status.as_u16(), &text) {
+            return Err(EmbeddingFetchError::Oversize(format!(
+                "Embedding API HTTP {status}: {preview}"
+            )));
+        }
+        return Err(EmbeddingFetchError::Other(format!(
+            "Embedding API HTTP {status}: {preview}"
+        )));
     }
+    let data: Value = serde_json::from_str(&text).map_err(|e| {
+        EmbeddingFetchError::Other(format!(
+            "Embedding response parse failed: {e}: {}",
+            text.chars().take(200).collect::<String>()
+        ))
+    })?;
     parse_embedding_values(&data, is_google, is_doubao_multimodal)
+        .map_err(EmbeddingFetchError::Other)
+}
+
+fn looks_like_oversize_error(status: u16, body: &str) -> bool {
+    if status == 413 {
+        return true;
+    }
+    let lower = body.to_lowercase();
+    lower.contains("too long")
+        || lower.contains("maximum context")
+        || lower.contains("max_tokens")
+        || lower.contains("max tokens")
+        || lower.contains("context length")
+        || lower.contains("token limit")
+        || lower.contains("exceeds")
+        || lower.contains("input length")
 }
 
 fn parse_embedding_values(
@@ -794,13 +1105,46 @@ fn is_safe_extra_header_name(name: &str) -> bool {
 fn is_reserved_extra_header_name(name: &str) -> bool {
     matches!(
         name.trim().to_ascii_lowercase().as_str(),
-        "authorization" | "content-type" | "host" | "content-length" | "x-goog-api-key"
+        "authorization" | "content-type" | "host" | "content-length" | "origin" | "x-goog-api-key"
     )
 }
 
 fn is_google_embedding_config(cfg: &SearchEmbeddingConfig) -> bool {
     let endpoint = cfg.endpoint.to_lowercase();
     endpoint.contains("generativelanguage.googleapis.com") || endpoint.contains(":embedcontent")
+}
+
+fn is_local_or_private_http_endpoint(endpoint: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(endpoint) else {
+        return false;
+    };
+    if !matches!(url.scheme(), "http" | "https") {
+        return false;
+    }
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let host = host
+        .trim_matches('[')
+        .trim_matches(']')
+        .to_ascii_lowercase();
+    if matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1") {
+        return true;
+    }
+    let octets = host
+        .split('.')
+        .map(str::parse::<u8>)
+        .collect::<Result<Vec<_>, _>>();
+    let Ok(octets) = octets else {
+        return false;
+    };
+    if octets.len() != 4 {
+        return false;
+    }
+    octets[0] == 10
+        || (octets[0] == 172 && (16..=31).contains(&octets[1]))
+        || (octets[0] == 192 && octets[1] == 168)
+        || octets[0] == 127
 }
 
 fn is_volcengine_embedding_endpoint(endpoint: &str) -> bool {
@@ -942,7 +1286,7 @@ fn strip_google_api_key_query(endpoint: &str) -> String {
     }
 }
 
-fn google_embedding_body(model: &str, text: &str, output_dimensionality: Option<u32>) -> Value {
+fn google_embedding_body(model: &str, text: &str, output_dimensionality: Option<f64>) -> Value {
     let model_path = if model.trim().starts_with("models/") {
         model.trim().to_string()
     } else {
@@ -952,7 +1296,10 @@ fn google_embedding_body(model: &str, text: &str, output_dimensionality: Option<
         "model": model_path,
         "content": { "parts": [{ "text": text }] },
     });
-    if let Some(dim) = output_dimensionality.filter(|dim| *dim > 0) {
+    if let Some(dim) = output_dimensionality
+        .filter(|dim| dim.is_finite() && *dim >= 1.0)
+        .map(|dim| dim.floor() as u32)
+    {
         body["output_dimensionality"] = json!(dim);
     }
     body
@@ -1047,6 +1394,7 @@ mod tests {
             vector_score: None,
             images: vec![],
             content: None,
+            graph_related_to: Vec::new(),
         }
     }
 
@@ -1100,7 +1448,7 @@ mod tests {
             endpoint: "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:batchEmbedContents?key=URL_KEY&alt=json".to_string(),
             api_key: "HEADER_KEY".to_string(),
             model: "gemini-embedding-001".to_string(),
-            output_dimensionality: Some(768),
+            output_dimensionality: Some(768.0),
             extra_headers: None,
         };
 
@@ -1110,7 +1458,7 @@ mod tests {
         assert!(!endpoint.contains("URL_KEY"));
         assert!(endpoint.contains("alt=json"));
 
-        let body = google_embedding_body("gemini-embedding-001", "hello", Some(768));
+        let body = google_embedding_body("gemini-embedding-001", "hello", Some(768.0));
         assert_eq!(body["model"], "models/gemini-embedding-001");
         assert_eq!(body["output_dimensionality"], 768);
     }
@@ -1244,8 +1592,44 @@ mod tests {
 
         assert!(is_reserved_extra_header_name("Authorization"));
         assert!(is_reserved_extra_header_name("content-type"));
+        assert!(is_reserved_extra_header_name("Origin"));
         assert!(is_reserved_extra_header_name("X-Goog-Api-Key"));
         assert!(!is_reserved_extra_header_name("X-Model-Provider-Id"));
+    }
+
+    #[test]
+    fn embedding_origin_header_is_limited_to_local_or_private_endpoints() {
+        assert!(is_local_or_private_http_endpoint(
+            "http://127.0.0.1:1234/v1/embeddings"
+        ));
+        assert!(is_local_or_private_http_endpoint(
+            "http://192.168.1.20:11434/v1/embeddings"
+        ));
+        assert!(is_local_or_private_http_endpoint(
+            "http://172.16.0.5/v1/embeddings"
+        ));
+        assert!(!is_local_or_private_http_endpoint(
+            "https://api.openai.com/v1/embeddings"
+        ));
+    }
+
+    #[test]
+    fn embedding_halving_never_splits_cjk_codepoints() {
+        let mut text = "默会知识库".to_string();
+        assert!(halve_text_on_char_boundary(&mut text));
+        assert_eq!(text, "默会");
+    }
+
+    #[test]
+    fn google_embedding_body_floors_positive_dimensions_and_omits_invalid_values() {
+        let body = google_embedding_body("gemini-embedding-001", "hello", Some(1.9));
+        assert_eq!(body["output_dimensionality"], 1);
+
+        let zero = google_embedding_body("gemini-embedding-001", "hello", Some(0.0));
+        assert!(zero.get("output_dimensionality").is_none());
+
+        let negative = google_embedding_body("gemini-embedding-001", "hello", Some(-4.0));
+        assert!(negative.get("output_dimensionality").is_none());
     }
 
     #[test]
@@ -1275,9 +1659,19 @@ mod tests {
 
     #[test]
     fn search_mode_distinguishes_keyword_vector_and_hybrid() {
-        assert_eq!(search_mode(false, 0), "keyword");
-        assert_eq!(search_mode(true, 3), "vector");
-        assert_eq!(search_mode(false, 3), "hybrid");
+        assert_eq!(search_mode(false, 0, 0), "keyword");
+        assert_eq!(search_mode(true, 3, 0), "vector");
+        assert_eq!(search_mode(false, 3, 0), "hybrid");
+        assert_eq!(search_mode(false, 0, 1), "hybrid");
+    }
+
+    #[test]
+    fn graph_quota_scales_from_thirty_to_fifteen_percent() {
+        assert_eq!(graph_result_quota(1, 0), 0);
+        assert_eq!(graph_result_quota(20, 0), 6);
+        assert_eq!(graph_result_quota(20, 10), 5);
+        assert_eq!(graph_result_quota(20, 20), 3);
+        assert_eq!(graph_result_quota(10, 100), 2);
     }
 
     #[test]
@@ -1357,6 +1751,50 @@ mod tests {
         assert_eq!(out.results[0].title, "Attention");
         assert!(out.results[0].title_match);
         assert!(out.results[0].score > 100.0);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn keyword_search_always_blends_available_graph_neighbors() {
+        let root = tmp_project();
+        write_page(
+            &root,
+            "wiki/concepts/agent.md",
+            "---\ntitle: Agent Runtime\n---\n\n# Agent Runtime\n\nagent runtime details. [[Tool Registry]]",
+        );
+        write_page(
+            &root,
+            "wiki/concepts/tool-registry.md",
+            "---\ntitle: Tool Registry\n---\n\n# Tool Registry\n\nDefines callable tools.",
+        );
+        write_page(
+            &root,
+            "wiki/concepts/unrelated.md",
+            "---\ntitle: Unrelated\n---\n\n# Unrelated\n\nNo graph connection.",
+        );
+
+        let out = search_project_inner(
+            root.to_string_lossy().to_string(),
+            "agent runtime".into(),
+            10,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(out.mode, "hybrid");
+        assert_eq!(out.graph_hits, 1);
+        assert!(out
+            .results
+            .iter()
+            .any(|result| result.title == "Agent Runtime"));
+        assert!(out.results.iter().any(|result| {
+            result.title == "Tool Registry"
+                && result.snippet.contains("Graph neighbor")
+                && result.graph_related_to == vec!["Agent Runtime"]
+        }));
+        assert!(!out.results.iter().any(|result| result.title == "Unrelated"));
         let _ = fs::remove_dir_all(root);
     }
 
