@@ -5,6 +5,7 @@ import { parseCliArgs } from "./cli-args.js"
 import { sanitizeDiagnostic } from "./persistence/state-store.js"
 import type { RuntimeContext } from "./runtime/runtime-context.js"
 import type { InteractiveRunOptions } from "./interactive/session.js"
+import type { ShellOperationResult } from "./shell/installer.js"
 import type { GuardConfig } from "./persistence/config-store.js"
 import type {
   GlobalConfigStore,
@@ -23,6 +24,12 @@ export interface CliController {
   refreshAndHandleQuota(): Promise<void>
 }
 
+export interface CliShellInstaller {
+  install(context: RuntimeContext): Promise<ShellOperationResult>
+  status(): Promise<ShellOperationResult>
+  uninstall(): Promise<ShellOperationResult>
+}
+
 export interface CliDependencies {
   rootDirectory: string
   resolveRuntimeContext(codexPath: string | undefined): Promise<RuntimeContext>
@@ -31,6 +38,7 @@ export interface CliDependencies {
     run(options: InteractiveRunOptions): Promise<number>
     stop(reason: string): Promise<void>
   }
+  createShellInstaller(): CliShellInstaller
   platform: NodeJS.Platform
   globalConfigStore: Pick<GlobalConfigStore, "load" | "update">
   loadProjectConfig(): Promise<GuardConfig | null>
@@ -74,6 +82,20 @@ export async function executeCli(
     })
     dependencies.writeOutput(
       `defaultRequireProtection=${String(updated.defaultRequireProtection)}`,
+    )
+    return 0
+  }
+  if (parsed.command === "shell") {
+    const installer = dependencies.createShellInstaller()
+    const result = parsed.operation === "install"
+      ? await installer.install(await dependencies.resolveRuntimeContext(parsed.codexPath))
+      : parsed.operation === "status"
+        ? await installer.status()
+        : await installer.uninstall()
+    dependencies.writeOutput(
+      parsed.operation === "status" && parsed.json
+        ? JSON.stringify(result, null, 2)
+        : formatShellResult(result),
     )
     return 0
   }
@@ -214,6 +236,15 @@ function formatConfig(
   ].join("\n")
 }
 
+function formatShellResult(result: ShellOperationResult): string {
+  return [
+    `status=${result.status}`,
+    result.shell ? `shell=${result.shell}` : null,
+    result.profilePath ? `profilePath=${result.profilePath}` : null,
+    result.shimDirectory ? `shimDirectory=${result.shimDirectory}` : null,
+  ].filter((line): line is string => line !== null).join("\n")
+}
+
 function contextualRuntimeError(
   error: unknown,
   context: RuntimeContext,
@@ -245,7 +276,7 @@ function assertLaunchAllowed(context: RuntimeContext): void {
   ].join("；"))
 }
 
-function assertInteractiveCapabilities(
+export function assertInteractiveCapabilities(
   context: RuntimeContext,
   platform: NodeJS.Platform,
 ): void {
@@ -352,6 +383,9 @@ function formatHelp(): string {
   return `Codex Quota Guard
 
 用法：
+  codex-quota-guard shell install [--codex-path <绝对路径>]
+  codex-quota-guard shell status [--json]
+  codex-quota-guard shell uninstall
   codex-quota-guard config show [--json]
   codex-quota-guard config set default-require-protection true|false
   codex-quota-guard interactive [--require-protection] [--codex-path <绝对路径>]

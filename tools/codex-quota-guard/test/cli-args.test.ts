@@ -83,6 +83,38 @@ describe("parseCliArgs", () => {
     })
   })
 
+  it("解析 shell install、status 和 uninstall", () => {
+    expect(parseCliArgs([
+      "shell",
+      "install",
+      "--codex-path",
+      "/路径 含空格/codex",
+    ])).toEqual({
+      command: "shell",
+      operation: "install",
+      codexPath: "/路径 含空格/codex",
+    })
+    expect(parseCliArgs(["shell", "status", "--json"])).toEqual({
+      command: "shell",
+      operation: "status",
+      json: true,
+    })
+    expect(parseCliArgs(["shell", "uninstall"])).toEqual({
+      command: "shell",
+      operation: "uninstall",
+    })
+  })
+
+  it.each([
+    ["shell"],
+    ["shell", "install", "extra"],
+    ["shell", "status", "--codex-path", "/codex"],
+    ["shell", "uninstall", "--json"],
+    ["shell", "unknown"],
+  ])("拒绝不受支持的 shell 参数：%s", (...args) => {
+    expect(() => parseCliArgs(args)).toThrow()
+  })
+
   it.each([
     ["config", "set", "default-interactive-protection", "false"],
     ["config", "set", "default-require-protection", "yes"],

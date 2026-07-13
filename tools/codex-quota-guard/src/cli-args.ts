@@ -1,6 +1,13 @@
 export type ParsedCliArgs =
   | { command: "help" }
   | {
+      command: "shell"
+      operation: "install"
+      codexPath: string | undefined
+    }
+  | { command: "shell"; operation: "status"; json: boolean }
+  | { command: "shell"; operation: "uninstall" }
+  | {
       command: "interactive"
       codexPath: string | undefined
       requireProtection: boolean
@@ -54,6 +61,28 @@ export function parseCliArgs(args: string[]): ParsedCliArgs {
       json: parsed.flags.has("json"),
       codexPath: parsed.values.get("codex-path"),
     }
+  }
+  if (command === "shell") {
+    const [operation, ...shellArgs] = rest
+    if (operation === "install") {
+      const parsed = parseOptions(shellArgs, new Set(["codex-path"]))
+      if (parsed.positionals.length > 0) throw new Error("shell install 不接受位置参数")
+      return {
+        command,
+        operation,
+        codexPath: parsed.values.get("codex-path"),
+      }
+    }
+    if (operation === "status") {
+      const parsed = parseOptions(shellArgs, new Set(["json"]))
+      if (parsed.positionals.length > 0) throw new Error("shell status 不接受位置参数")
+      return { command, operation, json: parsed.flags.has("json") }
+    }
+    if (operation === "uninstall") {
+      if (shellArgs.length > 0) throw new Error("shell uninstall 不接受其他参数")
+      return { command, operation }
+    }
+    throw new Error(`shell 未知操作：${operation ?? "(空)"}`)
   }
   if (command === "config") {
     const [operation, ...configArgs] = rest

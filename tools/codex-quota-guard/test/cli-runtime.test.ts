@@ -68,6 +68,26 @@ function setup() {
     },
     async stop(reason: string) { calls.push(`interactive:stop:${reason}`) },
   }
+  const shellInstaller = {
+    async install(context: RuntimeContext) {
+      expect(context).toBe(runtimeContext)
+      calls.push("shell:install")
+      return {
+        status: "installed" as const,
+        shell: "zsh" as const,
+        profilePath: "/home/me/.zshrc",
+        shimDirectory: "/home/me/.local/share/codex-quota-guard/shims",
+      }
+    },
+    async status() {
+      calls.push("shell:status")
+      return { status: "already-installed" as const, shell: "zsh" as const }
+    },
+    async uninstall() {
+      calls.push("shell:uninstall")
+      return { status: "uninstalled" as const, shell: "zsh" as const }
+    },
+  }
   let globalConfig = defaultGlobalGuardConfig()
   const dependencies: CliDependencies = {
     rootDirectory: "/tmp/fake-root",
@@ -85,6 +105,7 @@ function setup() {
       calls.push("interactive:create")
       return interactiveSession
     },
+    createShellInstaller: () => shellInstaller,
     platform: "darwin",
     globalConfigStore: {
       load: async () => structuredClone(globalConfig),
@@ -240,6 +261,35 @@ describe("executeCli", () => {
     expect(test.calls).toContain(
       "interactive:run:{\"tuiArgs\":[],\"requireProtection\":true}",
     )
+  })
+
+  it("shell install 才解析运行上下文并输出结果", async () => {
+    const test = setup()
+
+    expect(await executeCli([
+      "shell",
+      "install",
+      "--codex-path",
+      "/real/codex",
+    ], test.dependencies)).toBe(0)
+
+    expect(test.calls).toEqual(["resolve:/real/codex", "shell:install"])
+    expect(test.output.at(-1)).toContain("installed")
+  })
+
+  it("shell status 和 uninstall 不解析运行上下文或取得任务锁", async () => {
+    const status = setup()
+    expect(await executeCli(["shell", "status", "--json"], status.dependencies)).toBe(0)
+    expect(status.calls).toEqual(["shell:status"])
+    expect(JSON.parse(status.output.at(-1)!)).toMatchObject({
+      status: "already-installed",
+      shell: "zsh",
+    })
+
+    const uninstall = setup()
+    expect(await executeCli(["shell", "uninstall"], uninstall.dependencies)).toBe(0)
+    expect(uninstall.calls).toEqual(["shell:uninstall"])
+    expect(uninstall.output.at(-1)).toContain("uninstalled")
   })
 
   it.each([
