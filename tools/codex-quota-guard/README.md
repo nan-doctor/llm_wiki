@@ -4,15 +4,15 @@ Codex Quota Guard 是一个本地终端工具。它通过官方 `codex app-serve
 
 工具不抓取 ChatGPT 网页，不读取或复制认证 token，不调用未记录的私有 HTTP 接口，也不会为了生成阈值报告而额外调用模型。
 
-`0.1.0` 已完成 macOS 实机 App Server/Goal/精确中断验收，并在 GitHub Actions 的 macOS、Linux、Windows 上通过安装、格式、类型、86 项 fake transport 测试、构建和打包，可作为首个正式可用基线。
+`0.2.0` 在既有一次性 5 小时额度边沿保护上增加了不可静默切换的 Codex 可执行文件解析、运行环境漂移检测、五级能力证据、Goal 安全降级和可审计中断时延。
 
 ## 运行环境
 
 - Node.js 20 或更高版本。
-- `codex-cli 0.131.0` 或通过 `doctor` 验证为兼容的版本。
+- 能运行 `app-server` 且通过本工具现场 schema 与运行时检查的 Codex。
 - 已使用 ChatGPT 账户登录 Codex；API key 模式可能没有 ChatGPT 额度窗口。
 
-安装与构建：
+源码安装与构建：
 
 ```bash
 cd tools/codex-quota-guard
@@ -22,19 +22,54 @@ npm test
 npm run build
 ```
 
-从需要保护的仓库根目录运行编译后的入口，使 `.codex-guard/state.json` 写入该仓库：
+从 npm tarball 临时安装：
+
+```bash
+npm pack --pack-destination /private/tmp
+npm install --prefix /private/tmp/codex-quota-guard-prefix \
+  /private/tmp/codex-quota-guard-0.2.0.tgz --ignore-scripts
+/private/tmp/codex-quota-guard-prefix/bin/codex-quota-guard --help
+```
+
+卸载临时安装：
+
+```bash
+npm uninstall --prefix /private/tmp/codex-quota-guard-prefix codex-quota-guard
+```
+
+从需要保护的仓库根目录运行，使 `.codex-guard/state.json` 写入该仓库：
 
 ```bash
 node /绝对路径/llm_wiki/tools/codex-quota-guard/dist/src/cli.js status
 ```
 
-macOS 上若 PATH 中的全局 Codex 较旧，可以显式把 ChatGPT 应用内置二进制放在本次命令的 PATH 前端，无需修改全局安装：
+也可以在工具目录执行 `npm link`，之后使用 `codex-quota-guard` 命令；卸载时执行 `npm unlink -g codex-quota-guard`。
+
+## Codex 可执行文件选择
+
+所有 `status`、`doctor`、`run` 和 `resume` 命令使用同一个 resolver，优先级固定为：
+
+1. 本次命令的 `--codex-path <路径>`；
+2. 环境变量 `CODEX_QUOTA_GUARD_CODEX_PATH`；
+3. 当前项目 `.codex-guard/config.json` 中的 `codexPath`；
+4. `PATH` 中的 `codex`。
+
+示例：
 
 ```bash
-PATH="/Applications/ChatGPT.app/Contents/Resources:$PATH" codex-quota-guard doctor
+codex-quota-guard doctor --codex-path "/Applications/ChatGPT.app/Contents/Resources/codex"
+CODEX_QUOTA_GUARD_CODEX_PATH="/绝对路径/codex" codex-quota-guard doctor
 ```
 
-也可以在工具目录执行 `npm link`，之后使用 `codex-quota-guard` 命令。
+项目配置示例：
+
+```json
+{
+  "codexPath": "/绝对路径/codex"
+}
+```
+
+resolver 会验证绝对路径、普通文件、执行权限、`--version` 和 `app-server --help`，并记录真实路径。显式来源失败时绝不回退到其他二进制。macOS 的 ChatGPT 应用内置 Codex 只作为候选提示；若 `PATH` 没有 Codex，工具不会在用户不知情时自动启动该候选，必须用 `--codex-path`、环境变量或项目配置明确选择。`PATH` Codex 与应用内置 Codex 可能具有不同版本和协议指纹，应以 `doctor` 的实际输出为准。
 
 ## 命令
 
@@ -53,6 +88,7 @@ codex-quota-guard run "继续处理" --thread <threadId>
 codex-quota-guard run "执行目标" --goal "完成目标" --token-budget 20000
 codex-quota-guard run "限时任务" --max-runtime 30m --max-turns 3
 codex-quota-guard run "必须受保护的任务" --require-protection
+codex-quota-guard run "严格 Goal 任务" --goal "完成目标" --require-goal-control
 ```
 
 默认情况下，App Server 暂时不返回 5 小时窗口时仍允许 `run`。只有显式使用 `--require-protection` 才会在 `thread/start` 前启用严格准入；没有关联中断记录的其他命令仍保持默认行为。
@@ -64,6 +100,7 @@ codex-quota-guard run "必须受保护的任务" --require-protection
 ```bash
 codex-quota-guard resume
 codex-quota-guard resume "从中断点继续"
+codex-quota-guard resume "继续严格任务" --require-goal-control
 ```
 
 无提示的 `resume` 只恢复 thread 和原 Goal；带提示时再启动一个新 turn。没有可恢复记录时会明确提示改用 `run`。`resume` 不会为同一个 5 小时额度窗口重新布防。
@@ -75,9 +112,13 @@ codex-quota-guard doctor
 codex-quota-guard doctor --json
 ```
 
-`doctor` 会在系统临时目录运行 `codex app-server generate-json-schema --experimental`，检查所需方法，再完成 App Server 握手和 `account/rateLimits/read`。它不会调用 `turn/start`。
+`doctor` 会用同一个 resolver 选择 Codex，在系统临时目录运行 `codex app-server generate-json-schema --experimental`，检查所需方法，再完成 App Server 握手和 `account/rateLimits/read`。它不会调用 `turn/start`。
 
-文本和 JSON 结果会显示当前 Codex 版本、版本是否经过本工具验证、兼容性依据，以及 `turn/start`、`turn/interrupt`、Goal paused、后台 terminal 清理等逐项能力。每项能力分别显示 `schemaDetected` 和 `runtimeVerified`；普通 doctor 只把实际完成的额度读取标为运行时已验证。未知版本不会被静默视为兼容：工具只根据该版本现场生成的 schema 给出能力结论，并将整体结果标为降级。
+文本和 JSON 结果会显示所选路径、真实路径、选择来源、版本、协议指纹、握手、额度读取，以及 `turn/start`、`turn/interrupt`、`thread/read`、Goal get/pause/resume、后台 terminal 清理和双向服务器请求处理等逐项能力。
+
+能力状态分为 `unavailable`、`schemaDetected`、`runtimeVerified`、`degraded` 和 `failed`。`schemaDetected` 只表示当前生成的协议中存在该能力，不等于运行时已经成功。普通 doctor 只把真实握手和额度读取标为运行时已验证；不会为了美化结果调用模型。未知版本不会被静默视为兼容，工具只根据该版本现场生成的 schema 给出能力结论并标明降级。
+
+`status --json` 在保留原有 `schemaVersion`、额度、guard、turn、active 和 limits 字段的同时，增加 `executable`、`protocolFingerprint`、`capabilities`、`goalControl` 和 `runtimeChanges`。恢复任务时若路径、真实路径、版本或协议指纹发生变化，旧的 `runtimeVerified` 证据会失效，并根据当前 RuntimeContext 重新检查核心保护能力。
 
 ## 5 小时保护窗口
 
@@ -140,6 +181,8 @@ weekly 的额度或 `resetsAt` 变化不会重新布防。
 
 阈值事件会保存原 Goal，并在当前协议支持时将其设为 `paused`。`resume` 恢复原 objective、status 和 tokenBudget。任何路径都不会调用 `thread/goal/clear`。
 
+Goal 控制与额度中断保护相互独立。Goal schema 存在但数据库或运行时不可用时，工具先完成固定目标的精确 `turn/interrupt`，再把 `goalControl` 记为 `degraded` 并保存 `goal_database_unavailable`、`goal_schema_unavailable` 或 `goal_runtime_failed`；不会伪造已暂停，也不会清除 Goal。`--require-protection` 只要求额度读取与精确中断能力。只有显式使用 `--require-goal-control` 时，Goal pause/resume 运行时验证失败才会在 `turn/start` 前拒绝任务。
+
 以下保护分别记录，不互相换算：
 
 - ChatGPT 账户的 5 小时额度保护；
@@ -155,7 +198,7 @@ weekly 的额度或 `resetsAt` 变化不会重新布防。
 
 状态使用临时文件、文件同步和原子重命名。进程锁带心跳和崩溃锁接管。状态与报告会移除 token、cookie、authorization、secret 和 API key 等敏感字段。
 
-本地报告只包含阈值事件、固定 turn、额度快照、已完成 item 摘要、错误和 Git 状态，不调用模型生成停止总结。
+本地报告只包含阈值事件、固定 turn、额度快照、已完成 item 摘要、错误和 Git 状态，不调用模型生成停止总结。报告把真实额度事件标为 `quotaThreshold`，把显式 canary 标为 `liveCanary`，并保存可用的 UTC 时间及由单调时钟计算的请求时延；缺少通知或对账证据时对应字段保持 `null`。
 
 ## 测试
 
@@ -168,7 +211,7 @@ npm run build
 
 所有自动化测试均使用 fake App Server transport。`npm test` 不启动真实 Codex，不访问真实账户，也不调用真实 `turn/start`。
 
-仓库 CI 在 macOS、Linux 和 Windows 上使用 Node.js 20.19 运行安装、格式、类型、测试、构建和打包检查。子进程测试会通过 `process.execPath` 启动含空格路径中的 fake App Server；进程锁和原子状态写入测试使用各平台系统临时目录。
+仓库 CI 在 macOS、Linux 和 Windows 上使用 Node.js 20.19 运行安装、依赖树、格式、类型、全部 fake transport 测试、构建和打包检查。子进程测试会通过 `process.execPath` 启动含空格路径中的 fake App Server；进程锁和原子状态写入测试使用各平台系统临时目录。Linux 和 Windows CI 证明跨平台 resolver 与控制逻辑，不证明当地存在真实 ChatGPT 登录或额度窗口；真实 App Server 兼容性由 macOS 上的普通 doctor 安全探测记录。
 
 控制器还覆盖快速 turn 竞态：即使 `turn/completed` 早于 `turn/start` 响应到达，`waitForTurn` 仍返回服务端真实状态，不会因为错过通知而误发超时中断。失败 turn 的错误会写入本地状态，命令以非零状态退出。
 
@@ -182,7 +225,7 @@ npm run build
 CODEX_QUOTA_GUARD_LIVE_CANARY=I_ACCEPT_MODEL_USAGE codex-quota-guard doctor --live-canary
 ```
 
-执行器会先生成并检查当前 schema；缺少任一必要能力时不会调用 `turn/start`。通过后创建专用 thread，先执行不消耗模型的 Goal set/get、paused 读取确认和恢复预检；预检失败时直接停止，`turn/start` 保持 `NOT_TESTED`。只有全部预检成功才调用一次极小 turn。它会在发送 `turn/start` 前订阅 `turn/started`，以通知中的精确 `threadId`/`turnId` 立即发出 `turn/interrupt`，避免快速 turn 在响应返回后已经结束的竞态。`turn/started` 等待上限与 App Server 默认请求时限一致为 15 秒；若通知缺失，则使用已知 `threadId` 调用 `thread/read`，只有恰好找到一个 `inProgress` turn 时才按其精确 ID 中断，否则明确失败且不盲目选择。通知或 `thread/read` 得到的运行时 ID是中断依据，不要求它与 `turn/start` 响应 ID 相同。最后清理后台 terminal。失败路径尽最大努力恢复 Goal，绝不启动第二个 turn。结果写入 `liveCanary` 和能力矩阵的 `runtimeVerified`，不用于账户额度保护判断。
+执行器会先生成并检查当前 schema；缺少任一必要能力时不会调用 `turn/start`。通过后创建专用 thread，先执行不消耗模型的 Goal set/get、paused 读取确认和恢复预检；预检失败时直接停止，`turn/start` 保持未测试。只有全部预检成功才调用一次极小 turn。它会在发送 `turn/start` 前订阅 `turn/started`，以通知中的精确 `threadId`/`turnId` 立即发出 `turn/interrupt`，避免快速 turn 在响应返回后已经结束的竞态。`turn/started` 等待上限为 15 秒；若通知缺失，则使用已知 `threadId` 调用 `thread/read`，只有恰好找到一个 `inProgress` turn 时才按其精确 ID 中断，否则明确失败且不盲目选择。通知或 `thread/read` 得到的运行时 ID 是中断依据，不要求它与 `turn/start` 响应 ID 相同。中断后使用匹配的完成通知或精确 `thread/read` 对账记录终态，并清理后台 terminal。失败路径尽最大努力恢复 Goal，绝不启动第二个 turn 或自动重试。结果写入 `liveCanary`、审计时延和能力矩阵，不用于账户额度保护判断。
 
 ## 已知限制
 

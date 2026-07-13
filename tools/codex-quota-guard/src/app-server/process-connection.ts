@@ -7,6 +7,7 @@ import type {
   JsonRpcResponse,
   JsonRpcServerRequest,
 } from "./protocol.js"
+import { sanitizeDiagnostic } from "../persistence/state-store.js"
 
 interface PendingRequest {
   resolve: (value: unknown) => void
@@ -50,7 +51,7 @@ export class ProcessAppServerConnection extends EventEmitter implements AppServe
     lines.on("line", (line) => this.handleLine(line))
     child.stderr.setEncoding("utf8")
     child.stderr.on("data", (chunk: string) => {
-      this.emit("diagnostic", redactDiagnostic(chunk))
+      this.emit("diagnostic", sanitizeDiagnostic(chunk))
     })
     child.on("error", (error) => this.handleExit(error))
     child.on("exit", (code, signal) => {
@@ -156,10 +157,4 @@ export class ProcessAppServerConnection extends EventEmitter implements AppServe
     }
     this.pending.clear()
   }
-}
-
-function redactDiagnostic(value: string): string {
-  return value
-    .replace(/bearer\s+[^\s]+/gi, "Bearer [已脱敏]")
-    .replace(/(token|cookie|secret)=\S+/gi, "$1=[已脱敏]")
 }

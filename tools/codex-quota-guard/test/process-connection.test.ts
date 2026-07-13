@@ -18,6 +18,7 @@ describe("ProcessAppServerConnection", () => {
     const script = path.join(root, "fake app server.mjs")
     await writeFile(script, `
 import readline from "node:readline"
+process.stderr.write("authorization: Basic secret-auth cookie=session-secret token=secret-token\\n")
 const lines = readline.createInterface({ input: process.stdin })
 lines.on("line", (line) => {
   const message = JSON.parse(line)
@@ -48,11 +49,16 @@ lines.on("line", (line) => {
       }),
       { reconnectDelaysMs: [0] },
     )
+    const diagnostics: string[] = []
+    manager.on("diagnostic", (message: string) => diagnostics.push(message))
 
     await manager.start()
 
     expect(manager.currentRateLimits?.rateLimits.limitId).toBe("codex")
     expect(manager.currentRateLimits?.rateLimits.limitName).toContain("--enable goals")
+    expect(diagnostics.join("\n")).not.toContain("secret-auth")
+    expect(diagnostics.join("\n")).not.toContain("session-secret")
+    expect(diagnostics.join("\n")).not.toContain("secret-token")
     await manager.stop()
   })
 

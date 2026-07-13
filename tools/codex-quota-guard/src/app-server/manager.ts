@@ -66,7 +66,7 @@ export class AppServerManager extends EventEmitter {
       clientInfo: {
         name: "codex_quota_guard",
         title: "Codex Quota Guard",
-        version: "0.1.0",
+        version: "0.2.0",
       },
       capabilities: {
         experimentalApi: true,

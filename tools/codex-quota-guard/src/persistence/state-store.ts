@@ -4,9 +4,9 @@ import type { PersistedGuardState } from "../guard/state-machine.js"
 import { createAuditRecord } from "../audit/timing.js"
 import type { GuardStateRepository } from "./repository.js"
 
-const SENSITIVE_KEY = /(access.?token|refresh.?token|authorization|cookie|secret|api.?key)/i
-const BEARER_VALUE = /(authorization\s*:\s*)?bearer\s+[^\s"']+/gi
-const SENSITIVE_ASSIGNMENT = /\b(access[_-]?token|refresh[_-]?token|authorization|cookie|secret|api[_-]?key)\b\s*[:=]\s*[^\s,"']+/gi
+const SENSITIVE_KEY = /^(access.?token|refresh.?token|token|authorization|cookie|secret|api.?key)$/i
+const BEARER_VALUE = /bearer\s+[^\s"']+/gi
+const SENSITIVE_ASSIGNMENT = /\b(access[_-]?token|refresh[_-]?token|token|authorization|cookie|secret|api[_-]?key)\b\s*[:=]\s*(?:(?:bearer|basic|token)\s+)?[^\s,"']+/gi
 
 export class StateStore implements GuardStateRepository {
   readonly stateDirectory: string
@@ -78,11 +78,15 @@ export function sanitizeForPersistence(value: unknown): unknown {
     return clean
   }
   if (typeof value === "string") {
-    return value
-      .replace(BEARER_VALUE, "[已脱敏]")
-      .replace(SENSITIVE_ASSIGNMENT, "$1=[已脱敏]")
+    return sanitizeDiagnostic(value)
   }
   return value
+}
+
+export function sanitizeDiagnostic(value: string): string {
+  return value
+    .replace(SENSITIVE_ASSIGNMENT, "$1=[已脱敏]")
+    .replace(BEARER_VALUE, "Bearer [已脱敏]")
 }
 
 function randomSuffix(): string {

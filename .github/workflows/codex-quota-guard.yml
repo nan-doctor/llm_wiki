@@ -33,6 +33,7 @@ jobs:
           cache: npm
           cache-dependency-path: tools/codex-quota-guard/package-lock.json
       - run: npm ci --ignore-scripts
+      - run: npm ls --depth=0
       - run: npm run format:check
       - run: npm run typecheck
       - run: npm test

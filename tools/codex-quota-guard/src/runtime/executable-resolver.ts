@@ -7,6 +7,7 @@ import type {
   ExecutableValidationStage,
   ResolvedCodexExecutable,
 } from "./types.js"
+import { sanitizeDiagnostic } from "../persistence/state-store.js"
 
 export interface ResolveCodexInput {
   rootDirectory: string
@@ -203,7 +204,9 @@ function validationError(
   reason: string,
   cause?: unknown,
 ): CodexExecutableError {
-  const detail = cause instanceof Error && cause.message ? `：${cause.message}` : ""
+  const detail = cause instanceof Error && cause.message
+    ? `：${sanitizeDiagnostic(cause.message)}`
+    : ""
   return new CodexExecutableError(
     diagnosticMessage(executable, `${reason}${detail}`),
     executable,

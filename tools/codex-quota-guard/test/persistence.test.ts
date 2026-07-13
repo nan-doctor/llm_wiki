@@ -3,6 +3,7 @@ import os from "node:os"
 import path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 import { createInitialState } from "../src/guard/state-machine.js"
+import { buildCapabilityMatrix, emptyCapabilities } from "../src/runtime/capabilities.js"
 import { ProcessLock } from "../src/persistence/process-lock.js"
 import { StateStore } from "../src/persistence/state-store.js"
 
@@ -87,6 +88,48 @@ describe("StateStore", () => {
     })
     state.errors.push("Authorization: Bearer secret-bearer")
     state.errors.push("access_token: secret-access-in-error cookie=session-secret")
+    state.errors.push("resolver detail authorization=Basic secret-resolver-auth")
+    state.runtime.changes.push({
+      field: "codexExecutable",
+      previous: "token=secret-runtime-change",
+      current: "/safe/codex",
+    })
+    const capabilities = emptyCapabilities()
+    state.runtime.capabilities = buildCapabilityMatrix(capabilities)
+    state.runtime.capabilities.goalGet.detail = "cookie=secret-capability-cookie"
+    state.lastThresholdEvent = {
+      id: "quota-sensitive",
+      occurredAt: 1,
+      reason: "quota_threshold",
+      windowKey: "codex:300:1",
+      target: null,
+      handlingCompletedAt: 1,
+      interruptAttempted: false,
+      interruptSucceeded: null,
+      backgroundTerminalsCleaned: null,
+      originalGoal: null,
+      goalPaused: null,
+      goalErrorCategory: null,
+      audit: {
+        eventKind: "quotaThreshold",
+        quotaSnapshotObservedAt: null,
+        thresholdDetectedAt: null,
+        activeTurnResolvedAt: null,
+        interruptRequestedAt: null,
+        interruptAcknowledgedAt: null,
+        turnTerminalStateObservedAt: null,
+        goalPauseRequestedAt: null,
+        goalPauseAcknowledgedAt: null,
+        backgroundTerminalCleanedAt: null,
+        latencies: {
+          snapshotToDetectionMs: null,
+          detectionToInterruptRequestMs: null,
+          interruptRequestToAcknowledgementMs: null,
+          interruptRequestToTerminalStateMs: null,
+        },
+      },
+      errors: ["secret=secret-audit-error"],
+    }
 
     await store.save(state)
 
@@ -96,6 +139,10 @@ describe("StateStore", () => {
     expect(raw).not.toContain("secret-bearer")
     expect(raw).not.toContain("secret-access-in-error")
     expect(raw).not.toContain("session-secret")
+    expect(raw).not.toContain("secret-resolver-auth")
+    expect(raw).not.toContain("secret-runtime-change")
+    expect(raw).not.toContain("secret-capability-cookie")
+    expect(raw).not.toContain("secret-audit-error")
     expect(raw).not.toContain("accessToken")
     expect(raw).toContain("kept")
   })
