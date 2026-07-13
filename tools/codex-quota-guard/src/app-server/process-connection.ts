@@ -15,7 +15,7 @@ interface PendingRequest {
 }
 
 export interface ProcessConnectionOptions {
-  codexPath?: string
+  codexPath: string
   codexArgsPrefix?: string[]
   enableGoals?: boolean
   requestTimeoutMs?: number
@@ -27,14 +27,14 @@ export class ProcessAppServerConnection extends EventEmitter implements AppServe
   private readonly pending = new Map<number, PendingRequest>()
   private stopping = false
 
-  constructor(private readonly options: ProcessConnectionOptions = {}) {
+  constructor(private readonly options: ProcessConnectionOptions) {
     super()
   }
 
   async start(): Promise<void> {
     if (this.child) return
     this.stopping = false
-    const child = spawn(this.options.codexPath ?? "codex", [
+    const child = spawn(this.options.codexPath, [
       ...this.options.codexArgsPrefix ?? [],
       ...this.options.enableGoals ? ["--enable", "goals"] : [],
       "app-server",

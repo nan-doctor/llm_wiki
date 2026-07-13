@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import { buildCapabilityMatrix, type ProtocolCapabilities } from "../src/doctor.js"
 import { createInitialState } from "../src/guard/state-machine.js"
 import { executeCli, type CliController, type CliDependencies } from "../src/cli-runtime.js"
+import type { RuntimeContext } from "../src/runtime/runtime-context.js"
 
 function setup() {
   const calls: string[] = []
@@ -17,26 +18,48 @@ function setup() {
     async refreshAndHandleQuota() { calls.push("refresh") },
   }
   const output: string[] = []
+  const capabilities: ProtocolCapabilities = {
+    rateLimitsRead: true,
+    rateLimitsUpdated: true,
+    turnStart: true,
+    turnInterrupt: true,
+    threadRead: true,
+    goalGet: true,
+    goalSet: true,
+    goalPaused: true,
+    goalResume: true,
+    backgroundTerminalsClean: true,
+    serverRequestHandling: true,
+  }
+  const runtimeContext: RuntimeContext = {
+    executable: {
+      codexExecutable: "/selected/codex",
+      codexExecutableRealPath: "/real/selected/codex",
+      codexVersion: "codex-cli 0.131.0",
+      executableSelectionSource: "path",
+      launchAllowed: true,
+      discoveredCandidates: [],
+    },
+    protocolFingerprint: "fingerprint",
+    schemaCapabilities: capabilities,
+    capabilityMatrix: buildCapabilityMatrix(capabilities),
+  }
   const dependencies: CliDependencies = {
     rootDirectory: "/tmp/fake-root",
-    createController: () => controller,
+    resolveRuntimeContext: async (codexPath) => {
+      calls.push(`resolve:${codexPath ?? "default"}`)
+      return runtimeContext
+    },
+    createController: (context) => {
+      expect(context).toBe(runtimeContext)
+      calls.push("controller")
+      return controller
+    },
     acquireLock: async () => ({ release: async () => { calls.push("release") } }),
     liveCanaryConsent: false,
-    runDoctor: async (liveCanary = false) => {
+    runDoctor: async (context, liveCanary = false) => {
+      expect(context).toBe(runtimeContext)
       calls.push(`doctor:${String(liveCanary)}`)
-      const capabilities: ProtocolCapabilities = {
-        rateLimitsRead: true,
-        rateLimitsUpdated: true,
-        turnStart: true,
-        turnInterrupt: true,
-        threadRead: true,
-        goalGet: true,
-        goalSet: true,
-        goalPaused: true,
-        goalResume: true,
-        backgroundTerminalsClean: true,
-        serverRequestHandling: true,
-      }
       return ({
       ok: true,
       status: "ok",
@@ -58,7 +81,7 @@ function setup() {
     },
     writeOutput: (value) => output.push(value),
   }
-  return { calls, output, dependencies, controller, state }
+  return { calls, output, dependencies, controller, state, runtimeContext }
 }
 
 describe("executeCli", () => {
@@ -88,7 +111,7 @@ describe("executeCli", () => {
     const code = await executeCli(["doctor", "--live-canary", "--json"], test.dependencies)
 
     expect(code).toBe(0)
-    expect(test.calls).toEqual(["doctor:true"])
+    expect(test.calls).toEqual(["resolve:default", "doctor:true"])
   })
 
   it("status 启动控制器但不调用 turn/start", async () => {
@@ -97,7 +120,7 @@ describe("executeCli", () => {
     const code = await executeCli(["status", "--json"], test.dependencies)
 
     expect(code).toBe(0)
-    expect(test.calls).toEqual(["start", "stop", "release"])
+    expect(test.calls).toEqual(["resolve:default", "controller", "start", "stop", "release"])
     expect(JSON.parse(test.output[0]).schemaVersion).toBe(1)
   })
 
@@ -128,7 +151,7 @@ describe("executeCli", () => {
     const code = await executeCli(["doctor", "--json"], test.dependencies)
 
     expect(code).toBe(0)
-    expect(test.calls).toEqual(["doctor:false"])
+    expect(test.calls).toEqual(["resolve:default", "doctor:false"])
     expect(JSON.parse(test.output[0]).codexVersion).toBe("codex-cli 0.131.0")
   })
 
@@ -144,5 +167,20 @@ describe("executeCli", () => {
     expect(test.output[0]).toContain("background terminal clean: schema=DETECTED · runtime=NOT_TESTED")
     expect(test.output[0]).toContain("account/rateLimits/read: schema=DETECTED · runtime=VERIFIED")
     expect(test.output[0]).toContain("compatibility basis: generated-schema")
+  })
+
+  it.each([
+    ["status"],
+    ["doctor"],
+    ["run", "执行任务"],
+    ["resume", "继续"],
+  ])("%s 把 --codex-path 传给同一个 resolver", async (...command) => {
+    const test = setup()
+
+    await executeCli([...command, "--codex-path", "/路径 含空格/codex"], test.dependencies)
+
+    expect(test.calls.filter((call) => call.startsWith("resolve:"))).toEqual([
+      "resolve:/路径 含空格/codex",
+    ])
   })
 })

@@ -1,18 +1,13 @@
-import { spawn } from "node:child_process"
-import { mkdtemp, rm } from "node:fs/promises"
-import os from "node:os"
-import path from "node:path"
 import { AppServerManager } from "./app-server/manager.js"
 import { ProcessAppServerConnection } from "./app-server/process-connection.js"
 import { normalizeRateLimits } from "./quota/normalize.js"
 import type { ThreadGoal } from "./app-server/protocol.js"
 import {
   buildCapabilityMatrix,
-  emptyCapabilities,
-  inspectGeneratedProtocol,
   type CapabilityMatrix,
   type ProtocolCapabilities,
 } from "./runtime/capabilities.js"
+import type { RuntimeContext } from "./runtime/runtime-context.js"
 
 export { buildCapabilityMatrix, inspectGeneratedProtocol } from "./runtime/capabilities.js"
 export type { CapabilityMatrix, ProtocolCapabilities } from "./runtime/capabilities.js"
@@ -68,48 +63,29 @@ export interface DoctorResult {
 }
 
 export async function runDoctor(
-  codexPath = "codex",
+  context: RuntimeContext,
   options: RunDoctorOptions = {},
 ): Promise<DoctorResult> {
   const warnings: string[] = []
   const errors: string[] = []
-  let codexVersion: string | null = null
-  let capabilities = emptyCapabilities()
+  const codexVersion = context.executable.codexVersion
+  const capabilities = context.schemaCapabilities
   let appServerHandshake = false
   let rateLimitsRead = false
   let fiveHourProtectionAvailable = false
-  let schemaGenerated = false
   let canary: LiveCanaryExecution | null = null
-  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "codex-quota-guard-schema-"))
 
-  try {
-    try {
-      codexVersion = (await runCommand(codexPath, ["--version"])).trim()
-    } catch (error) {
-      errors.push(`无法读取 Codex 版本：${errorMessage(error)}`)
-    }
+  if (!capabilities.goalPaused) {
+    warnings.push("当前协议不支持 Goal paused；保护器不会清除 Goal，将记录降级")
+  }
+  if (!capabilities.backgroundTerminalsClean) {
+    warnings.push("当前协议不支持 thread/backgroundTerminals/clean；后台 terminal 清理将降级")
+  }
 
-    try {
-      await runCommand(codexPath, [
-        "app-server",
-        "generate-json-schema",
-        "--experimental",
-        "--out",
-        temporaryDirectory,
-      ])
-      capabilities = await inspectGeneratedProtocol(temporaryDirectory)
-      schemaGenerated = true
-    } catch (error) {
-      errors.push(`协议生成或读取失败：${errorMessage(error)}`)
-    }
-
-    if (!capabilities.goalPaused) {
-      warnings.push("当前协议不支持 Goal paused；保护器不会清除 Goal，将记录降级")
-    }
-    if (!capabilities.backgroundTerminalsClean) {
-      warnings.push("当前协议不支持 thread/backgroundTerminals/clean；后台 terminal 清理将降级")
-    }
-
+  const codexPath = context.executable.codexExecutableRealPath
+  if (!codexPath) {
+    errors.push("已解析的 Codex 没有可启动的真实路径")
+  } else {
     const manager = new AppServerManager(
       () => new ProcessAppServerConnection({ codexPath, enableGoals: true }),
       { reconnectDelaysMs: [250, 500, 1_000] },
@@ -145,8 +121,6 @@ export async function runDoctor(
     } finally {
       await manager.stop()
     }
-  } finally {
-    await rm(temporaryDirectory, { recursive: true, force: true })
   }
 
   const hardCapabilities = capabilities.rateLimitsRead
@@ -154,7 +128,10 @@ export async function runDoctor(
     && capabilities.turnStart
     && capabilities.turnInterrupt
     && capabilities.threadRead
-  const versionAssessment = assessCodexVersion(codexVersion, schemaGenerated)
+  const versionAssessment = assessCodexVersion(
+    codexVersion,
+    context.protocolFingerprint !== null,
+  )
   if (versionAssessment.warning) warnings.push(versionAssessment.warning)
   if (rateLimitsRead && !fiveHourProtectionAvailable) {
     warnings.push("five-hour protection unavailable：当前额度快照未返回唯一有效的 300 分钟窗口")
@@ -426,23 +403,6 @@ export function classifyDoctorStatus(input: {
   }
   if (!input.fiveHourProtectionAvailable || input.warnings.length > 0) return "degraded"
   return "ok"
-}
-
-function runCommand(command: string, args: string[]): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true })
-    let stdout = ""
-    let stderr = ""
-    child.stdout.setEncoding("utf8")
-    child.stderr.setEncoding("utf8")
-    child.stdout.on("data", (chunk: string) => { stdout += chunk })
-    child.stderr.on("data", (chunk: string) => { stderr += chunk })
-    child.on("error", reject)
-    child.on("exit", (code) => {
-      if (code === 0) resolve(stdout)
-      else reject(new Error(`退出码 ${String(code)}：${stderr.trim()}`))
-    })
-  })
 }
 
 function errorMessage(error: unknown): string {

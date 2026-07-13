@@ -20,3 +20,11 @@ export interface ResolvedCodexExecutable {
   launchAllowed: boolean
   discoveredCandidates: string[]
 }
+
+export interface RuntimeContext {
+  executable: ResolvedCodexExecutable
+  protocolFingerprint: string | null
+  schemaCapabilities: ProtocolCapabilities
+  capabilityMatrix: CapabilityMatrix
+}
+import type { CapabilityMatrix, ProtocolCapabilities } from "./capabilities.js"

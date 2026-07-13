@@ -7,14 +7,21 @@ import { GuardController } from "./guard/controller.js"
 import { ProcessLock } from "./persistence/process-lock.js"
 import { StateStore } from "./persistence/state-store.js"
 import { LocalThresholdReporter } from "./report/local-reporter.js"
+import { createRuntimeContext } from "./runtime/runtime-context.js"
 
 const rootDirectory = process.cwd()
 
 const dependencies: CliDependencies = {
   rootDirectory,
-  createController: () => {
+  resolveRuntimeContext: async (codexPath) => await createRuntimeContext({
+    rootDirectory,
+    cliPath: codexPath,
+  }),
+  createController: (context) => {
+    const codexPath = context.executable.codexExecutableRealPath
+    if (!codexPath) throw new Error("已解析的 Codex 没有可启动的真实路径")
     const manager = new AppServerManager(
-      () => new ProcessAppServerConnection({ enableGoals: true }),
+      () => new ProcessAppServerConnection({ codexPath, enableGoals: true }),
     )
     return new GuardController(
       manager,
@@ -24,7 +31,7 @@ const dependencies: CliDependencies = {
   },
   acquireLock: async () => await ProcessLock.acquire(rootDirectory),
   liveCanaryConsent: process.env.CODEX_QUOTA_GUARD_LIVE_CANARY === "I_ACCEPT_MODEL_USAGE",
-  runDoctor: async (liveCanary) => await runDoctor("codex", { liveCanary }),
+  runDoctor: async (context, liveCanary) => await runDoctor(context, { liveCanary }),
   writeOutput: (value) => process.stdout.write(`${value}\n`),
 }
 

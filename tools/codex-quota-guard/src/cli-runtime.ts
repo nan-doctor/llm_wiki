@@ -2,6 +2,7 @@ import type { DoctorResult } from "./doctor.js"
 import type { RunOptions, StartedTurn } from "./guard/controller.js"
 import type { PersistedGuardState, TurnAdmission } from "./guard/state-machine.js"
 import { parseCliArgs } from "./cli-args.js"
+import type { RuntimeContext } from "./runtime/runtime-context.js"
 import { buildStatusOutput, formatStatusText } from "./ui/status.js"
 
 export interface CliController {
@@ -17,10 +18,11 @@ export interface CliController {
 
 export interface CliDependencies {
   rootDirectory: string
-  createController(): CliController
+  resolveRuntimeContext(codexPath: string | undefined): Promise<RuntimeContext>
+  createController(context: RuntimeContext): CliController
   acquireLock(): Promise<{ release(): Promise<void> }>
   liveCanaryConsent: boolean
-  runDoctor(liveCanary: boolean): Promise<DoctorResult>
+  runDoctor(context: RuntimeContext, liveCanary: boolean): Promise<DoctorResult>
   writeOutput(value: string): void
 }
 
@@ -39,13 +41,17 @@ export async function executeCli(
         "live canary 会消耗真实模型额度；必须同时设置 CODEX_QUOTA_GUARD_LIVE_CANARY=I_ACCEPT_MODEL_USAGE",
       )
     }
-    const result = await dependencies.runDoctor(parsed.liveCanary)
+    const context = await dependencies.resolveRuntimeContext(parsed.codexPath)
+    assertLaunchAllowed(context)
+    const result = await dependencies.runDoctor(context, parsed.liveCanary)
     dependencies.writeOutput(parsed.json ? JSON.stringify(result, null, 2) : formatDoctor(result))
     return result.ok ? 0 : 1
   }
 
+  const context = await dependencies.resolveRuntimeContext(parsed.codexPath)
+  assertLaunchAllowed(context)
   const lock = await dependencies.acquireLock()
-  const controller = dependencies.createController()
+  const controller = dependencies.createController(context)
   let polling: NodeJS.Timeout | null = null
   try {
     await controller.start()
@@ -97,6 +103,16 @@ export async function executeCli(
     await controller.stop()
     await lock.release()
   }
+}
+
+function assertLaunchAllowed(context: RuntimeContext): void {
+  if (context.executable.launchAllowed && context.executable.codexExecutableRealPath) return
+  const candidates = context.executable.discoveredCandidates.join("、") || "无"
+  throw new Error([
+    `发现 Codex 候选但未明确选择：${candidates}`,
+    "额度读取不可用；精确 turn interrupt 不可用；Goal 控制不可用",
+    "请使用 --codex-path <绝对路径> 明确选择",
+  ].join("；"))
 }
 
 function writeStatus(
