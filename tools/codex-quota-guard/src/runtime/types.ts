@@ -27,4 +27,19 @@ export interface RuntimeContext {
   schemaCapabilities: ProtocolCapabilities
   capabilityMatrix: CapabilityMatrix
 }
+
+export interface RuntimeIdentity {
+  codexExecutable: string
+  codexExecutableRealPath: string
+  codexVersion: string
+  protocolFingerprint: string
+}
+
+export type RuntimeIdentityField = keyof RuntimeIdentity
+
+export interface RuntimeChange {
+  field: RuntimeIdentityField
+  previous: string
+  current: string
+}
 import type { CapabilityMatrix, ProtocolCapabilities } from "./capabilities.js"

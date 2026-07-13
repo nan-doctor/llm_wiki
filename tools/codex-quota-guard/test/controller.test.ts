@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { AppServerManager } from "../src/app-server/manager.js"
+import { buildCapabilityMatrix, type ProtocolCapabilities } from "../src/doctor.js"
 import { GuardController, type GuardControllerOptions } from "../src/guard/controller.js"
 import {
   applyQuotaObservation,
@@ -12,6 +13,7 @@ import { normalizeRateLimits } from "../src/quota/normalize.js"
 import type { ThresholdReporter } from "../src/report/reporter.js"
 import { response, snapshot, window } from "./fixtures.js"
 import { FakeConnectionFactory } from "./fake-app-server.js"
+import type { RuntimeContext } from "../src/runtime/runtime-context.js"
 
 class MemoryRepository implements GuardStateRepository {
   state: PersistedGuardState | null = null
@@ -80,7 +82,128 @@ const criticalLimits = () => response(snapshot({
   secondary: window(98, 2_000, 300),
 }))
 
+function runtimeContext(options: {
+  realPath?: string
+  version?: string
+  fingerprint?: string
+  turnInterrupt?: boolean
+} = {}): RuntimeContext {
+  const schemaCapabilities: ProtocolCapabilities = {
+    rateLimitsRead: true,
+    rateLimitsUpdated: true,
+    turnStart: true,
+    turnInterrupt: options.turnInterrupt ?? true,
+    threadRead: true,
+    goalGet: true,
+    goalSet: true,
+    goalPaused: true,
+    goalResume: true,
+    backgroundTerminalsClean: true,
+    serverRequestHandling: true,
+  }
+  return {
+    executable: {
+      codexExecutable: "/selected/codex",
+      codexExecutableRealPath: options.realPath ?? "/real/selected/codex",
+      codexVersion: options.version ?? "codex-cli 1.0.0",
+      executableSelectionSource: "path",
+      launchAllowed: true,
+      discoveredCandidates: [],
+    },
+    protocolFingerprint: options.fingerprint ?? "fingerprint-1",
+    schemaCapabilities,
+    capabilityMatrix: buildCapabilityMatrix(schemaCapabilities),
+  }
+}
+
+function resumableStateWithRuntime(context: RuntimeContext): PersistedGuardState {
+  let state = applyQuotaObservation(createInitialState(), normalizeRateLimits(response(snapshot({
+    primary: window(80, 2_000, 300),
+    secondary: window(40, 8_000, 10_080),
+  })), 10_000), null, 10_000).state
+  const target = { threadId: "thread-1", turnId: "turn-old", startedAt: 10_100 }
+  const handling = applyQuotaObservation(
+    state,
+    normalizeRateLimits(criticalLimits(), 11_000),
+    target,
+    11_000,
+  )
+  state = completeThresholdHandling(handling.state, handling.event!.id, 11_100)
+  const runtime = {
+    task: {
+      codexExecutable: context.executable.codexExecutable,
+      codexExecutableRealPath: context.executable.codexExecutableRealPath!,
+      codexVersion: context.executable.codexVersion!,
+      protocolFingerprint: context.protocolFingerprint!,
+    },
+    current: null,
+    capabilities: buildCapabilityMatrix(context.schemaCapabilities, { turnInterrupt: true }),
+    changes: [],
+  }
+  ;(state as unknown as { runtime: typeof runtime }).runtime = runtime
+  return state
+}
+
 describe("GuardController", () => {
+  it("run 保存创建任务所用的运行身份", async () => {
+    const context = runtimeContext()
+    const test = setup({ runtimeContext: context } as GuardControllerOptions & {
+      runtimeContext: RuntimeContext
+    })
+    await test.controller.start()
+
+    await test.controller.run("保存运行身份")
+
+    expect((test.repository.state as unknown as { runtime: { task: unknown } }).runtime.task)
+      .toEqual({
+        codexExecutable: "/selected/codex",
+        codexExecutableRealPath: "/real/selected/codex",
+        codexVersion: "codex-cli 1.0.0",
+        protocolFingerprint: "fingerprint-1",
+      })
+    await test.controller.stop()
+  })
+
+  it.each([
+    ["codexExecutableRealPath", runtimeContext({ realPath: "/real/new/codex" })],
+    ["codexVersion", runtimeContext({ version: "codex-cli 2.0.0" })],
+    ["protocolFingerprint", runtimeContext({ fingerprint: "fingerprint-2" })],
+  ] as const)("resume 检测 %s 变化并丢弃旧运行时证据", async (field, current) => {
+    const previous = runtimeContext()
+    const test = setup({ runtimeContext: current } as GuardControllerOptions & {
+      runtimeContext: RuntimeContext
+    })
+    test.repository.state = resumableStateWithRuntime(previous)
+    await test.controller.start()
+
+    await test.controller.resume()
+
+    const runtime = (test.repository.state as unknown as {
+      runtime: {
+        changes: Array<{ field: string }>
+        capabilities: { turnInterrupt: { runtimeVerified: boolean | null } }
+      }
+    }).runtime
+    expect(runtime.changes).toContainEqual(expect.objectContaining({ field }))
+    expect(runtime.capabilities.turnInterrupt.runtimeVerified).toBeNull()
+    await test.controller.stop()
+  })
+
+  it("resume 在新运行环境缺少核心 interrupt schema 时拒绝", async () => {
+    const previous = runtimeContext()
+    const current = runtimeContext({ fingerprint: "fingerprint-2", turnInterrupt: false })
+    const test = setup({ runtimeContext: current } as GuardControllerOptions & {
+      runtimeContext: RuntimeContext
+    })
+    test.repository.state = resumableStateWithRuntime(previous)
+    await test.controller.start()
+
+    await expect(test.controller.resume()).rejects.toThrow("核心保护能力不可用：turn/interrupt")
+    expect(test.factory.connections[0].requests.some((request) => request.method === "thread/resume"))
+      .toBe(false)
+    await test.controller.stop()
+  })
+
   it("只有 weekly 时 DORMANT 但允许启动 turn", async () => {
     const factory = new FakeConnectionFactory((connection) => {
       connection.respond("initialize", {})

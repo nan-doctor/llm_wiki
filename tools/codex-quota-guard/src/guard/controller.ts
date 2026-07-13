@@ -3,6 +3,12 @@ import { AppServerManager } from "../app-server/manager.js"
 import { normalizeRateLimits } from "../quota/normalize.js"
 import type { GuardStateRepository } from "../persistence/repository.js"
 import type { ThresholdReporter } from "../report/reporter.js"
+import {
+  compareRuntimeIdentity,
+  invalidateRuntimeEvidence,
+  runtimeIdentityFromContext,
+} from "../runtime/identity.js"
+import type { RuntimeContext } from "../runtime/runtime-context.js"
 import { AsyncMutex } from "./async-mutex.js"
 import {
   applyQuotaObservation,
@@ -18,6 +24,7 @@ export interface GuardControllerOptions {
   staleAfterMs?: number
   unknownWaitMs?: number
   unknownRetryMs?: number
+  runtimeContext?: RuntimeContext
 }
 
 export interface RunOptions {
@@ -40,6 +47,7 @@ export class GuardController {
   private readonly staleAfterMs: number
   private readonly unknownWaitMs: number
   private readonly unknownRetryMs: number
+  private readonly runtimeContext: RuntimeContext | null
   private state: PersistedGuardState = createInitialState()
   private readonly backgroundTasks = new Set<Promise<void>>()
   private readonly completedTurnStatuses = new Map<string, string>()
@@ -56,11 +64,13 @@ export class GuardController {
     this.staleAfterMs = options.staleAfterMs ?? 90_000
     this.unknownWaitMs = options.unknownWaitMs ?? 15_000
     this.unknownRetryMs = options.unknownRetryMs ?? 500
+    this.runtimeContext = options.runtimeContext ?? null
   }
 
   async start(): Promise<void> {
     if (this.started) return
     this.state = await this.repository.load() ?? createInitialState()
+    this.applyCurrentRuntimeContext()
     this.manager.on("rateLimits", this.onRateLimits)
     this.manager.on("notification", this.onNotification)
     this.manager.on("diagnostic", this.onDiagnostic)
@@ -122,6 +132,8 @@ export class GuardController {
       const threadId = options.threadId
         ? await this.resumeThread(options.threadId)
         : await this.startThread()
+      this.captureTaskRuntime()
+      await this.repository.save(this.state)
       if (options.goal || options.tokenBudget !== undefined) {
         await this.manager.request("thread/goal/set", {
           threadId,
@@ -140,6 +152,7 @@ export class GuardController {
       if (!event || !event.target || this.state.resumableEventId !== event.id) {
         throw new Error("没有可恢复的中断记录，请改用 run")
       }
+      this.assertCoreProtectionCapabilities()
       this.assertTurnAdmission(this.state.limits.requireProtection)
       const threadId = await this.resumeThread(event.target.threadId)
       if (event.originalGoal) {
@@ -150,6 +163,7 @@ export class GuardController {
           tokenBudget: event.originalGoal.tokenBudget,
         })
       }
+      this.captureTaskRuntime()
       this.state.resumableEventId = null
       await this.repository.save(this.state)
       if (prompt === undefined || prompt.trim() === "") return null
@@ -370,6 +384,36 @@ export class GuardController {
     if (options.tokenBudget !== undefined) this.state.limits.goalTokenBudget = options.tokenBudget
     if (options.maxRuntimeMs !== undefined) this.state.limits.maxRuntimeMs = options.maxRuntimeMs
     if (options.maxTurns !== undefined) this.state.limits.maxTurns = options.maxTurns
+  }
+
+  private applyCurrentRuntimeContext(): void {
+    if (!this.runtimeContext) return
+    const current = runtimeIdentityFromContext(this.runtimeContext)
+    const changes = compareRuntimeIdentity(this.state.runtime.task, current)
+    this.state.runtime.current = current
+    this.state.runtime.changes = changes
+    this.state.runtime.capabilities = invalidateRuntimeEvidence(
+      this.runtimeContext.capabilityMatrix,
+      changes.length > 0,
+    )
+  }
+
+  private captureTaskRuntime(): void {
+    if (!this.state.runtime.current) return
+    this.state.runtime.task = { ...this.state.runtime.current }
+  }
+
+  private assertCoreProtectionCapabilities(): void {
+    if (!this.runtimeContext) return
+    const required: Array<[keyof RuntimeContext["schemaCapabilities"], string]> = [
+      ["rateLimitsRead", "account/rateLimits/read"],
+      ["rateLimitsUpdated", "account/rateLimits/updated"],
+      ["turnStart", "turn/start"],
+      ["turnInterrupt", "turn/interrupt"],
+      ["threadRead", "thread/read"],
+    ]
+    const missing = required.find(([key]) => !this.runtimeContext!.schemaCapabilities[key])
+    if (missing) throw new Error(`核心保护能力不可用：${missing[1]}`)
   }
 
   private isAwaitingBaseline(): boolean {

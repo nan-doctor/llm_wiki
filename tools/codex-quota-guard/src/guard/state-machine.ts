@@ -1,5 +1,7 @@
 import type { ActiveTurn, ThreadGoal } from "../app-server/protocol.js"
 import type { NormalizedQuota } from "../quota/types.js"
+import type { CapabilityMatrix } from "../runtime/capabilities.js"
+import type { RuntimeChange, RuntimeIdentity } from "../runtime/types.js"
 
 export type GuardPhase = "ARMED" | "HANDLING" | "HANDLED" | "DORMANT" | "UNKNOWN"
 export type TurnAdmission = "ALLOWED" | "WAITING" | "BLOCKED"
@@ -41,6 +43,12 @@ export interface PersistedGuardState {
     turnsStarted: number
     requireProtection: boolean
   }
+  runtime: {
+    task: RuntimeIdentity | null
+    current: RuntimeIdentity | null
+    capabilities: CapabilityMatrix | null
+    changes: RuntimeChange[]
+  }
   completedItems: Array<Record<string, unknown>>
   errors: string[]
 }
@@ -71,6 +79,12 @@ export function createInitialState(): PersistedGuardState {
       maxTurns: null,
       turnsStarted: 0,
       requireProtection: false,
+    },
+    runtime: {
+      task: null,
+      current: null,
+      capabilities: null,
+      changes: [],
     },
     completedItems: [],
     errors: [],

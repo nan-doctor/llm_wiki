@@ -22,6 +22,40 @@ afterEach(async () => {
 })
 
 describe("StateStore", () => {
+  it("加载旧 schemaVersion 1 状态时补齐 runtime 且保留 HANDLED", async () => {
+    const root = await temporaryDirectory()
+    const stateDirectory = path.join(root, ".codex-guard")
+    await mkdir(stateDirectory, { recursive: true })
+    const legacy = createInitialState() as unknown as Record<string, unknown>
+    delete legacy.runtime
+    const legacyGuard = legacy.guard as Record<string, unknown>
+    legacy.guard = {
+      ...legacyGuard,
+      state: "HANDLED",
+      thresholdHandled: true,
+      windowKey: "codex:300:123",
+    }
+    await writeFile(path.join(stateDirectory, "state.json"), JSON.stringify(legacy))
+
+    const loaded = await new StateStore(root).load() as unknown as {
+      guard: { state: string; thresholdHandled: boolean; windowKey: string | null }
+      runtime: unknown
+    }
+
+    expect(loaded.runtime).toEqual({
+      task: null,
+      current: null,
+      capabilities: null,
+      changes: [],
+    })
+    expect(loaded.guard).toEqual({
+      state: "HANDLED",
+      thresholdHandled: true,
+      windowKey: "codex:300:123",
+      lastProtectedRemainingPercent: null,
+    })
+  })
+
   it("原子保存并重新加载状态", async () => {
     const root = await temporaryDirectory()
     const store = new StateStore(root)

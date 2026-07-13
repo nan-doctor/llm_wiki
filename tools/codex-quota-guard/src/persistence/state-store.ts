@@ -29,6 +29,12 @@ export class StateStore implements GuardStateRepository {
       throw new Error(`不支持的状态文件版本：${String(value.schemaVersion)}`)
     }
     value.limits.requireProtection ??= false
+    value.runtime ??= {
+      task: null,
+      current: null,
+      capabilities: null,
+      changes: [],
+    }
     return value
   }
 

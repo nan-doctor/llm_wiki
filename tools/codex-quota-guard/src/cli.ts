@@ -27,6 +27,7 @@ const dependencies: CliDependencies = {
       manager,
       new StateStore(rootDirectory),
       new LocalThresholdReporter(rootDirectory),
+      { runtimeContext: context },
     )
   },
   acquireLock: async () => await ProcessLock.acquire(rootDirectory),
