@@ -4,6 +4,7 @@ import type { PersistedGuardState, TurnAdmission } from "./guard/state-machine.j
 import { parseCliArgs } from "./cli-args.js"
 import { sanitizeDiagnostic } from "./persistence/state-store.js"
 import type { RuntimeContext } from "./runtime/runtime-context.js"
+import type { InteractiveRunOptions } from "./interactive/session.js"
 import { buildStatusOutput, formatStatusText } from "./ui/status.js"
 
 export interface CliController {
@@ -21,6 +22,11 @@ export interface CliDependencies {
   rootDirectory: string
   resolveRuntimeContext(codexPath: string | undefined): Promise<RuntimeContext>
   createController(context: RuntimeContext): CliController
+  createInteractiveSession(context: RuntimeContext): {
+    run(options: InteractiveRunOptions): Promise<number>
+    stop(reason: string): Promise<void>
+  }
+  platform: NodeJS.Platform
   acquireLock(): Promise<{ release(): Promise<void> }>
   liveCanaryConsent: boolean
   runDoctor(context: RuntimeContext, liveCanary: boolean): Promise<DoctorResult>
@@ -52,6 +58,36 @@ export async function executeCli(
     }
     dependencies.writeOutput(parsed.json ? JSON.stringify(result, null, 2) : formatDoctor(result))
     return result.ok ? 0 : 1
+  }
+
+  if (parsed.command === "interactive") {
+    const context = await dependencies.resolveRuntimeContext(parsed.codexPath)
+    assertLaunchAllowed(context)
+    assertInteractiveCapabilities(context, dependencies.platform)
+    let lock: Awaited<ReturnType<CliDependencies["acquireLock"]>>
+    try {
+      lock = await dependencies.acquireLock()
+    } catch (error) {
+      throw contextualRuntimeError(error, context)
+    }
+    let session: ReturnType<CliDependencies["createInteractiveSession"]>
+    try {
+      session = dependencies.createInteractiveSession(context)
+    } catch (error) {
+      await lock.release()
+      throw contextualRuntimeError(error, context)
+    }
+    try {
+      return await session.run({
+        tuiArgs: parsed.tuiArgs,
+        requireProtection: parsed.requireProtection,
+      })
+    } catch (error) {
+      throw contextualRuntimeError(error, context)
+    } finally {
+      await session.stop("cli-finally")
+      await lock.release()
+    }
   }
 
   const context = await dependencies.resolveRuntimeContext(parsed.codexPath)
@@ -158,6 +194,32 @@ function assertLaunchAllowed(context: RuntimeContext): void {
   ].join("；"))
 }
 
+function assertInteractiveCapabilities(
+  context: RuntimeContext,
+  platform: NodeJS.Platform,
+): void {
+  const remote = context.remoteCapabilities
+  const required: Array<[boolean, string]> = [
+    [remote.remoteTui, "remoteTui"],
+    [remote.remoteAuthTokenEnv, "remoteAuthTokenEnv"],
+    [remote.appServerStdio, "appServerStdio"],
+    [platform === "win32" ? remote.remoteLoopbackWebSocket : remote.remoteUnixSocket,
+      platform === "win32" ? "remoteLoopbackWebSocket" : "remoteUnixSocket"],
+    [context.schemaCapabilities.rateLimitsRead, "account/rateLimits/read"],
+    [context.schemaCapabilities.rateLimitsUpdated, "account/rateLimits/updated"],
+    [context.schemaCapabilities.turnStart, "turn/start"],
+    [context.schemaCapabilities.turnInterrupt, "turn/interrupt"],
+    [context.schemaCapabilities.threadRead, "thread/read"],
+  ]
+  const missing = required.filter(([available]) => !available).map(([, name]) => name)
+  if (missing.length === 0) return
+  throw new Error([
+    `当前 Codex 缺少安全交互能力：${missing.join("、")}`,
+    "不会接管默认 codex，也不会采用双客户端或网页抓取",
+    "请保留 codex-guarded 作为安全退化入口",
+  ].join("；"))
+}
+
 function writeStatus(
   controller: CliController,
   json: boolean,
@@ -183,6 +245,11 @@ function formatDoctor(result: DoctorResult): string {
     `app-server handshake: ${result.appServerHandshake ? "OK" : "FAILED"}`,
     `rate limits read: ${result.rateLimitsRead ? "OK" : "FAILED"}`,
     `five-hour protection: ${result.fiveHourProtectionAvailable ? "AVAILABLE" : "UNAVAILABLE"}`,
+    `remote TUI: ${availability(result.remoteCapabilities.remoteTui)}`,
+    `remote auth token env: ${availability(result.remoteCapabilities.remoteAuthTokenEnv)}`,
+    `remote Unix socket: ${availability(result.remoteCapabilities.remoteUnixSocket)}`,
+    `remote loopback WebSocket: ${availability(result.remoteCapabilities.remoteLoopbackWebSocket)}`,
+    `App Server stdio: ${availability(result.remoteCapabilities.appServerStdio)}`,
     `Rate limits: ${result.capabilityMatrix.rateLimitsRead.status}`,
     `Turn interrupt: ${result.capabilityMatrix.turnInterrupt.status}`,
     `Thread read: ${result.capabilityMatrix.threadRead.status}`,
@@ -215,6 +282,10 @@ function formatDoctor(result: DoctorResult): string {
   return lines.join("\n")
 }
 
+function availability(value: boolean): string {
+  return value ? "AVAILABLE" : "UNAVAILABLE"
+}
+
 function combinedCapabilityStatus(
   first: DoctorResult["capabilityMatrix"]["goalPaused"]["status"],
   second: DoctorResult["capabilityMatrix"]["goalResume"]["status"],
@@ -230,6 +301,8 @@ function formatHelp(): string {
   return `Codex Quota Guard
 
 用法：
+  codex-quota-guard interactive [--require-protection] [--codex-path <绝对路径>]
+                                [-- <原生 TUI 参数>]
   codex-quota-guard status [--json]
   codex-quota-guard run <提示> [--thread <id>] [--goal <目标>] [--token-budget <数量>]
                         [--max-runtime <时长>] [--max-turns <数量>]
@@ -238,6 +311,7 @@ function formatHelp(): string {
   codex-quota-guard doctor [--live-canary] [--json]
 
 说明：
+  interactive             无需命令行提示；任务提示请在 TUI 内输入
   --codex-path <绝对路径>  为本次命令明确选择 Codex，不静默回退
   --require-protection  仅当 5 小时保护窗口可用时允许本次 run
   --require-goal-control  仅当 Goal pause/resume 可运行时允许启动 turn

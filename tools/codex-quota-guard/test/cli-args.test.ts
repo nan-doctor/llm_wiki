@@ -22,6 +22,44 @@ describe("parseCliArgs", () => {
     })
   })
 
+  it("interactive 无需提示并以 -- 分隔原生 TUI 参数", () => {
+    expect(parseCliArgs(["interactive"])).toEqual({
+      command: "interactive",
+      codexPath: undefined,
+      requireProtection: false,
+      tuiArgs: [],
+    })
+    expect(parseCliArgs([
+      "interactive",
+      "--require-protection",
+      "--codex-path",
+      "/real/codex",
+      "--",
+      "--model",
+      "gpt-5",
+    ])).toEqual({
+      command: "interactive",
+      codexPath: "/real/codex",
+      requireProtection: true,
+      tuiArgs: ["--model", "gpt-5"],
+    })
+  })
+
+  it.each([
+    ["--remote", "unix:///tmp/other.sock"],
+    ["--remote=ws://127.0.0.1:1"],
+    ["--remote-auth-token-env", "OTHER_TOKEN"],
+    ["--remote-auth-token-env=OTHER_TOKEN"],
+  ])("interactive 拒绝用户覆盖 Guard 独占的 remote 参数：%s", (...remoteArgs) => {
+    expect(() => parseCliArgs(["interactive", "--", ...remoteArgs]))
+      .toThrow("remote 参数由 Codex Quota Guard 独占")
+  })
+
+  it("interactive 不把 -- 分界前的位置文本当成任务提示", () => {
+    expect(() => parseCliArgs(["interactive", "检查仓库"]))
+      .toThrow("任务提示请在 TUI 内输入")
+  })
+
   it("解析 run 的单轮参数", () => {
     expect(parseCliArgs([
       "run",

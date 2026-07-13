@@ -1,5 +1,11 @@
 export type ParsedCliArgs =
   | { command: "help" }
+  | {
+      command: "interactive"
+      codexPath: string | undefined
+      requireProtection: boolean
+      tuiArgs: string[]
+    }
   | { command: "status"; json: boolean; codexPath: string | undefined }
   | {
       command: "doctor"
@@ -41,6 +47,27 @@ export function parseCliArgs(args: string[]): ParsedCliArgs {
       command,
       json: parsed.flags.has("json"),
       codexPath: parsed.values.get("codex-path"),
+    }
+  }
+  if (command === "interactive") {
+    const separator = rest.indexOf("--")
+    const guardArgs = separator === -1 ? rest : rest.slice(0, separator)
+    const tuiArgs = separator === -1 ? [] : rest.slice(separator + 1)
+    const parsed = parseOptions(guardArgs, new Set([
+      "require-protection",
+      "codex-path",
+    ]))
+    if (parsed.positionals.length > 0) {
+      throw new Error("interactive 不接受位置任务提示；任务提示请在 TUI 内输入")
+    }
+    if (tuiArgs.some(isGuardOwnedRemoteArgument)) {
+      throw new Error("remote 参数由 Codex Quota Guard 独占，不得传给原生 TUI")
+    }
+    return {
+      command,
+      codexPath: parsed.values.get("codex-path"),
+      requireProtection: parsed.flags.has("require-protection"),
+      tuiArgs,
     }
   }
   if (command === "doctor") {
@@ -97,6 +124,13 @@ export function parseCliArgs(args: string[]): ParsedCliArgs {
     }
   }
   throw new Error(`未知命令：${command ?? "(空)"}`)
+}
+
+function isGuardOwnedRemoteArgument(value: string): boolean {
+  return value === "--remote"
+    || value.startsWith("--remote=")
+    || value === "--remote-auth-token-env"
+    || value.startsWith("--remote-auth-token-env=")
 }
 
 function parseOptions(args: string[], allowed: Set<string>): {

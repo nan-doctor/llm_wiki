@@ -31,12 +31,20 @@ export class InteractiveAppServerClient extends EventEmitter
   private notificationRefreshTask: Promise<void> | null = null
   private finishNotificationRefresh: (() => void) | null = null
   private subscribed = false
+  private subscriptionConfirmed = false
+  private readonly subscribedPromise: Promise<void>
+  private readonly confirmSubscription: () => void
 
   constructor(
     private readonly proxy: InteractiveProxy,
     private readonly options: InteractiveAppServerClientOptions,
   ) {
     super()
+    let confirmSubscription!: () => void
+    this.subscribedPromise = new Promise((resolve) => {
+      confirmSubscription = resolve
+    })
+    this.confirmSubscription = confirmSubscription
   }
 
   async start(): Promise<void> {
@@ -83,6 +91,10 @@ export class InteractiveAppServerClient extends EventEmitter
     while (this.notificationRefreshTask) await this.notificationRefreshTask
   }
 
+  async waitUntilSubscribed(): Promise<void> {
+    await this.subscribedPromise
+  }
+
   private async startInternal(): Promise<void> {
     this.subscribe()
     try {
@@ -125,6 +137,10 @@ export class InteractiveAppServerClient extends EventEmitter
     this.proxy.on("tuiNotification", this.onTuiNotification)
     this.proxy.on("notification", this.onNotification)
     this.proxy.on("exit", this.onProxyExit)
+    if (!this.subscriptionConfirmed) {
+      this.subscriptionConfirmed = true
+      this.confirmSubscription()
+    }
   }
 
   private unsubscribe(): void {

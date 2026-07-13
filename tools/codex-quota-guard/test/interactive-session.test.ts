@@ -43,6 +43,13 @@ function runtimeContext(): RuntimeContext {
     protocolFingerprint: "fingerprint",
     schemaCapabilities: capabilities,
     capabilityMatrix: {} as RuntimeContext["capabilityMatrix"],
+    remoteCapabilities: {
+      remoteTui: true,
+      remoteAuthTokenEnv: true,
+      remoteUnixSocket: true,
+      remoteLoopbackWebSocket: true,
+      appServerStdio: true,
+    },
   }
 }
 
@@ -359,6 +366,28 @@ function sessionHarness(trigger: "normal" | "crash" | "sigint" | "sighup" | "raw
 }
 
 describe("InteractiveSession", () => {
+  it("等待 controller 确认握手订阅后才启动 TUI", async () => {
+    const test = sessionHarness("normal")
+    let subscribed = false
+    test.dependencies.createController = () => ({
+      start: async () => await test.controller.start(),
+      waitUntilListening: async () => {
+        await Promise.resolve()
+        subscribed = true
+      },
+      shutdownInteractiveSession: async () => await test.controller.shutdownInteractiveSession(),
+      stop: async () => await test.controller.stop(),
+    })
+    const originalStart = test.tui.start.bind(test.tui)
+    test.tui.start = async () => {
+      expect(subscribed).toBe(true)
+      await originalStart()
+    }
+    const session = new InteractiveSession(test.dependencies)
+
+    await expect(session.run({ tuiArgs: [], requireProtection: false })).resolves.toBe(0)
+  })
+
   it("严格遵守启动与唯一逆序清理路径且 token 只交给 TUI", async () => {
     const test = sessionHarness("normal")
     const session = new InteractiveSession(test.dependencies)

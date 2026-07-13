@@ -26,6 +26,7 @@ export interface RuntimeContext {
   protocolFingerprint: string | null
   schemaCapabilities: ProtocolCapabilities
   capabilityMatrix: CapabilityMatrix
+  remoteCapabilities: RemoteCapabilities
 }
 
 export interface RuntimeIdentity {
@@ -43,3 +44,4 @@ export interface RuntimeChange {
   current: string
 }
 import type { CapabilityMatrix, ProtocolCapabilities } from "./capabilities.js"
+import type { RemoteCapabilities } from "./remote-capabilities.js"

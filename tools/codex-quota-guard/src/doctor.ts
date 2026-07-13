@@ -8,6 +8,7 @@ import {
   type ProtocolCapabilities,
 } from "./runtime/capabilities.js"
 import type { RuntimeContext } from "./runtime/runtime-context.js"
+import type { RemoteCapabilities } from "./runtime/remote-capabilities.js"
 import {
   createAuditRecord,
   finalizeLatencies,
@@ -75,6 +76,7 @@ export interface DoctorResult {
   }
   capabilities: ProtocolCapabilities
   capabilityMatrix: CapabilityMatrix
+  remoteCapabilities: RemoteCapabilities
   liveCanary: LiveCanaryResult | null
   warnings: string[]
   errors: string[]
@@ -183,6 +185,7 @@ export async function runDoctor(
       rateLimitsRead,
       ...canary?.runtime,
     }),
+    remoteCapabilities: { ...context.remoteCapabilities },
     liveCanary: canary?.result ?? null,
     warnings,
     errors,

@@ -53,6 +53,17 @@ function createClient(proxy: FakeInteractiveProxy, timeoutMs = 100) {
 }
 
 describe("InteractiveAppServerClient", () => {
+  it("在等待 initialized 前可确认通知订阅已经建立", async () => {
+    const proxy = new FakeInteractiveProxy()
+    const client = createClient(proxy)
+    const start = client.start()
+
+    await expect(client.waitUntilSubscribed()).resolves.toBeUndefined()
+
+    await client.stop()
+    await expect(start).rejects.toThrow("交互额度客户端已停止")
+  })
+
   it("initialized 后先读取额度再释放 turn/start", async () => {
     const proxy = new FakeInteractiveProxy()
     const client = createClient(proxy)

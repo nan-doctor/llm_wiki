@@ -146,6 +146,13 @@ function runtimeContext(options: {
     protocolFingerprint: options.fingerprint ?? "fingerprint-1",
     schemaCapabilities,
     capabilityMatrix: buildCapabilityMatrix(schemaCapabilities),
+    remoteCapabilities: {
+      remoteTui: true,
+      remoteAuthTokenEnv: true,
+      remoteUnixSocket: true,
+      remoteLoopbackWebSocket: true,
+      appServerStdio: true,
+    },
   }
 }
 

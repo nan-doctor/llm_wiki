@@ -26,6 +26,7 @@ export interface SessionProxy extends EventEmitter {
 
 export interface SessionController {
   start(): Promise<void>
+  waitUntilListening?(): Promise<void>
   shutdownInteractiveSession(): Promise<void>
   stop(): Promise<void>
 }
@@ -112,6 +113,7 @@ export class InteractiveSession {
       const controllerReady = this.controller.start()
       this.controllerStarted = true
       void controllerReady.catch(() => this.terminate(1, "交互控制器启动失败"))
+      await this.controller.waitUntilListening?.()
       await this.tui.start()
       this.tuiStarted = true
       void this.tui.waitForExit()

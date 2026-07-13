@@ -14,6 +14,10 @@ import {
   type ResolveCodexInput,
 } from "./executable-resolver.js"
 import type { ResolvedCodexExecutable, RuntimeContext } from "./types.js"
+import {
+  emptyRemoteCapabilities,
+  inspectRemoteCapabilities,
+} from "./remote-capabilities.js"
 
 export interface CreateRuntimeContextInput {
   rootDirectory: string
@@ -26,6 +30,7 @@ export interface RuntimeContextDependencies {
   resolveExecutable(input: ResolveCodexInput): Promise<ResolvedCodexExecutable>
   createTemporaryDirectory(): Promise<string>
   generateSchema(executable: string, outputDirectory: string): Promise<void>
+  readHelp(executable: string, args: string[]): Promise<string>
   removeTemporaryDirectory(directory: string): Promise<void>
 }
 
@@ -48,6 +53,7 @@ export async function createRuntimeContext(
       protocolFingerprint: null,
       schemaCapabilities,
       capabilityMatrix: buildCapabilityMatrix(schemaCapabilities),
+      remoteCapabilities: emptyRemoteCapabilities(),
     }
   }
   if (!executable.codexExecutableRealPath) {
@@ -60,12 +66,17 @@ export async function createRuntimeContext(
       executable.codexExecutableRealPath,
       temporaryDirectory,
     )
+    const [tuiHelp, appServerHelp] = await Promise.all([
+      dependencies.readHelp(executable.codexExecutableRealPath, ["--help"]),
+      dependencies.readHelp(executable.codexExecutableRealPath, ["app-server", "--help"]),
+    ])
     const schemaCapabilities = await inspectGeneratedProtocol(temporaryDirectory)
     return {
       executable,
       protocolFingerprint: await fingerprintProtocol(temporaryDirectory),
       schemaCapabilities,
       capabilityMatrix: buildCapabilityMatrix(schemaCapabilities),
+      remoteCapabilities: inspectRemoteCapabilities({ tuiHelp, appServerHelp }),
     }
   } finally {
     await dependencies.removeTemporaryDirectory(temporaryDirectory)
@@ -81,11 +92,24 @@ function defaultRuntimeContextDependencies(): RuntimeContextDependencies {
       "codex-quota-guard-schema-",
     )),
     generateSchema: generateSchema,
+    readHelp: readHelp,
     removeTemporaryDirectory: async (directory) => await rm(directory, {
       recursive: true,
       force: true,
     }),
   }
+}
+
+function readHelp(executable: string, args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(executable, args, {
+      encoding: "utf8",
+      windowsHide: true,
+    }, (error, stdout, stderr) => {
+      if (error) reject(error)
+      else resolve(`${stdout}\n${stderr}`)
+    })
+  })
 }
 
 async function generateSchema(executable: string, outputDirectory: string): Promise<void> {

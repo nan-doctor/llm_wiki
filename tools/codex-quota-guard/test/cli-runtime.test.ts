@@ -49,6 +49,20 @@ function setup() {
     protocolFingerprint: "fingerprint",
     schemaCapabilities: capabilities,
     capabilityMatrix: buildCapabilityMatrix(capabilities),
+    remoteCapabilities: {
+      remoteTui: true,
+      remoteAuthTokenEnv: true,
+      remoteUnixSocket: true,
+      remoteLoopbackWebSocket: true,
+      appServerStdio: true,
+    },
+  }
+  const interactiveSession = {
+    async run(options: { tuiArgs: string[]; requireProtection: boolean }) {
+      calls.push(`interactive:run:${JSON.stringify(options)}`)
+      return 7
+    },
+    async stop(reason: string) { calls.push(`interactive:stop:${reason}`) },
   }
   const dependencies: CliDependencies = {
     rootDirectory: "/tmp/fake-root",
@@ -61,6 +75,12 @@ function setup() {
       calls.push("controller")
       return controller
     },
+    createInteractiveSession: (context) => {
+      expect(context).toBe(runtimeContext)
+      calls.push("interactive:create")
+      return interactiveSession
+    },
+    platform: "darwin",
     acquireLock: async () => ({ release: async () => { calls.push("release") } }),
     liveCanaryConsent: false,
     runDoctor: async (context, liveCanary = false) => {
@@ -84,6 +104,7 @@ function setup() {
       },
       capabilities,
       capabilityMatrix: buildCapabilityMatrix(capabilities, { rateLimitsRead: true }),
+      remoteCapabilities: runtimeContext.remoteCapabilities,
       liveCanary: null,
       warnings: [],
       errors: [],
@@ -91,7 +112,15 @@ function setup() {
     },
     writeOutput: (value) => output.push(value),
   }
-  return { calls, output, dependencies, controller, state, runtimeContext }
+  return {
+    calls,
+    output,
+    dependencies,
+    controller,
+    state,
+    runtimeContext,
+    interactiveSession,
+  }
 }
 
 describe("executeCli", () => {
@@ -105,6 +134,68 @@ describe("executeCli", () => {
     expect(test.output[0]).toContain("codex-quota-guard run <提示>")
     expect(test.output[0]).toContain("--require-protection")
     expect(test.output[0]).toContain("--codex-path <绝对路径>")
+    expect(test.output[0]).toContain("codex-quota-guard interactive")
+    expect(test.output[0]).toContain("任务提示请在 TUI 内输入")
+  })
+
+  it("interactive 只构造一次上下文、持锁并原样返回 TUI 退出码", async () => {
+    const test = setup()
+    test.dependencies.acquireLock = async () => {
+      test.calls.push("acquire")
+      return { release: async () => { test.calls.push("release") } }
+    }
+
+    const code = await executeCli([
+      "interactive",
+      "--require-protection",
+      "--",
+      "--model",
+      "gpt-test",
+    ], test.dependencies)
+
+    expect(code).toBe(7)
+    expect(test.calls).toEqual([
+      "resolve:default",
+      "acquire",
+      "interactive:create",
+      "interactive:run:{\"tuiArgs\":[\"--model\",\"gpt-test\"],\"requireProtection\":true}",
+      "interactive:stop:cli-finally",
+      "release",
+    ])
+    expect(test.calls.some((call) => call === "controller")).toBe(false)
+  })
+
+  it("interactive 异常仍停止 session 并释放锁", async () => {
+    const test = setup()
+    test.dependencies.createInteractiveSession = () => ({
+      async run() { throw new Error("TUI 启动失败") },
+      async stop(reason) { test.calls.push(`failed-session:stop:${reason}`) },
+    })
+
+    await expect(executeCli(["interactive"], test.dependencies))
+      .rejects.toThrow("TUI 启动失败")
+
+    expect(test.calls).toContain("failed-session:stop:cli-finally")
+    expect(test.calls).toContain("release")
+  })
+
+  it.each([
+    ["darwin", "remoteUnixSocket"],
+    ["linux", "remoteUnixSocket"],
+    ["win32", "remoteLoopbackWebSocket"],
+    ["darwin", "remoteTui"],
+    ["darwin", "remoteAuthTokenEnv"],
+    ["darwin", "appServerStdio"],
+  ] as const)("%s 缺少 %s 时在创建 session 前安全拒绝", async (platform, key) => {
+    const test = setup()
+    test.dependencies.platform = platform
+    test.runtimeContext.remoteCapabilities[key] = false
+
+    await expect(executeCli(["interactive"], test.dependencies))
+      .rejects.toThrow(key)
+    await expect(executeCli(["interactive"], test.dependencies))
+      .rejects.toThrow("codex-guarded")
+    expect(test.calls).not.toContain("interactive:create")
   })
 
   it("live canary 缺少确认变量时在启动 App Server 前拒绝", async () => {
@@ -235,6 +326,8 @@ describe("executeCli", () => {
     expect(test.output[0]).toContain("background terminal clean: schema=DETECTED · runtime=NOT_TESTED")
     expect(test.output[0]).toContain("account/rateLimits/read: schema=DETECTED · runtime=VERIFIED")
     expect(test.output[0]).toContain("compatibility basis: generated-schema")
+    expect(test.output[0]).toContain("remote TUI: AVAILABLE")
+    expect(test.output[0]).toContain("remote Unix socket: AVAILABLE")
   })
 
   it.each([
