@@ -62,6 +62,7 @@ async function harness(options: {
   confirmation?: string
   verify?: () => Promise<void>
   currentPath?: string
+  inspectVersion?: (codexPath: string) => Promise<string>
 } = {}) {
   const root = await temporaryRoot()
   const home = path.join(root, "home with spaces")
@@ -92,6 +93,7 @@ async function harness(options: {
     writeOutput: (line) => output.push(line),
     verifyInstallation: options.verify ?? (async () => undefined),
     currentPath: options.currentPath ?? `${shimDirectory}:/usr/bin:/bin`,
+    inspectRealCodexVersion: options.inspectVersion,
   })
   return {
     root,
@@ -291,6 +293,23 @@ describe("ShellInstaller", () => {
         expect.stringContaining("PATH"),
       ]),
     })
+  })
+
+  it("status 显示保存路径未变但实测版本已漂移", async () => {
+    const test = await harness({
+      inspectVersion: async (codexPath) => {
+        expect(codexPath).toBe(test.codexPath)
+        return "codex-cli 2.0.0"
+      },
+    })
+    await test.installer.install(context(test.codexPath))
+
+    await expect(test.installer.status()).resolves.toMatchObject({
+      healthy: false,
+      observedCodexVersion: "codex-cli 2.0.0",
+      issues: expect.arrayContaining([expect.stringContaining("版本漂移")]),
+    })
+    expect((await test.globalStore.load()).realCodexVersion).toBe("codex-cli 1.0.0")
   })
 
   it("还有其他 shell 记录时仅卸载当前 zsh 并保留共享 shim", async () => {

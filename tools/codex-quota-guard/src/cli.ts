@@ -18,6 +18,7 @@ import { ProcessLock } from "./persistence/process-lock.js"
 import { ConfigStore } from "./persistence/config-store.js"
 import { GlobalConfigStore } from "./persistence/global-config-store.js"
 import { StateStore } from "./persistence/state-store.js"
+import { runExactChild } from "./process/run-child.js"
 import { detectCurrentShell } from "./shell/current-shell.js"
 import { ShellInstaller, type ShellVerificationDetails } from "./shell/installer.js"
 import { InteractiveAppServerClient } from "./proxy/interactive-app-server-client.js"
@@ -26,9 +27,11 @@ import { RawAppServerProcess } from "./proxy/raw-app-server-process.js"
 import { TransparentJsonRpcProxy } from "./proxy/transparent-proxy.js"
 import { LocalThresholdReporter } from "./report/local-reporter.js"
 import { createRuntimeContext } from "./runtime/runtime-context.js"
+import { resolveCodexExecutable } from "./runtime/executable-resolver.js"
 
 const rootDirectory = process.cwd()
 const home = process.env.HOME ?? process.env.USERPROFILE ?? os.homedir()
+const cliEntryPath = fileURLToPath(import.meta.url)
 const globalConfigStore = new GlobalConfigStore({
   platform: process.platform,
   home,
@@ -41,6 +44,19 @@ const dependencies: CliDependencies = {
     rootDirectory,
     cliPath: codexPath,
   }),
+  shim: {
+    environment: process.env,
+    isTTY: Boolean(process.stdin.isTTY && process.stderr.isTTY),
+    guardVersion: "0.3.0",
+    cliEntryPath,
+    resolveSavedExecutable: async (codexPath) => await resolveCodexExecutable({
+      rootDirectory,
+      cliPath: codexPath,
+    }),
+    runChild: async (executable, args) => await runExactChild(executable, args),
+    promptUnknown: async (args) => await askUnknownChoice(args),
+    writeError: (value) => process.stderr.write(`${value}\n`),
+  },
   createController: (context) => {
     const codexPath = context.executable.codexExecutableRealPath
     if (!codexPath) throw new Error("已解析的 Codex 没有可启动的真实路径")
@@ -128,7 +144,7 @@ const dependencies: CliDependencies = {
       rootDirectory,
       globalStore: globalConfigStore,
       nodeExecutable: process.execPath,
-      cliEntry: fileURLToPath(import.meta.url),
+      cliEntry: cliEntryPath,
       platform: process.platform,
       home,
       detectShell: async () => {
@@ -155,6 +171,11 @@ const dependencies: CliDependencies = {
         powerShellExecutable,
       ),
       currentPath: process.env.PATH,
+      inspectRealCodexVersion: async (codexPath) => {
+        const resolved = await resolveCodexExecutable({ rootDirectory, cliPath: codexPath })
+        if (!resolved.codexVersion) throw new Error("--version 未返回版本")
+        return resolved.codexVersion
+      },
     })
   },
   platform: process.platform,
@@ -173,6 +194,14 @@ async function askForConfirmation(prompt: string): Promise<string> {
   } finally {
     terminal.close()
   }
+}
+
+async function askUnknownChoice(args: string[]): Promise<string> {
+  return await askForConfirmation([
+    `未识别的原生子命令：${JSON.stringify(args)}`,
+    "输入 raw 明确无保护旁路；输入其他内容取消：",
+    " ",
+  ].join("\n"))
 }
 
 async function directParentProcessName(platform: NodeJS.Platform): Promise<string> {
@@ -222,6 +251,18 @@ async function verifyShellResolution(
   ])
   if (actualRealPath !== expectedRealPath) {
     throw new Error(`PATH 验证失败：codex 解析到 ${resolved}，预期 ${expected}`)
+  }
+  const identity = await runExecutable(process.execPath, [
+    cliEntryPath,
+    "__shim",
+    "identity",
+  ], { HOME: home })
+  if (identity.stdout.trim() !== details.realCodexExecutable) {
+    throw new Error([
+      "wrapper identity 验证失败",
+      `返回：${identity.stdout.trim() || "(空)"}`,
+      `预期：${details.realCodexExecutable}`,
+    ].join("；"))
   }
 }
 

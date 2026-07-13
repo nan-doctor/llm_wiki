@@ -3,6 +3,7 @@ import { buildCapabilityMatrix, type ProtocolCapabilities } from "../src/doctor.
 import { createInitialState } from "../src/guard/state-machine.js"
 import { executeCli, type CliController, type CliDependencies } from "../src/cli-runtime.js"
 import type { RuntimeContext } from "../src/runtime/runtime-context.js"
+import type { ResolvedCodexExecutable } from "../src/runtime/types.js"
 import {
   defaultGlobalGuardConfig,
   type GlobalGuardConfig,
@@ -10,6 +11,8 @@ import {
 
 function setup() {
   const calls: string[] = []
+  const errors: string[] = []
+  const childCalls: Array<{ executable: string; args: string[] }> = []
   const state = createInitialState()
   const controller: CliController = {
     async start() { calls.push("start") },
@@ -89,11 +92,38 @@ function setup() {
     },
   }
   let globalConfig = defaultGlobalGuardConfig()
+  let childExitCode = 0
+  let shimIsTTY = true
+  let unknownChoice = "cancel"
+  let observedVersion = "codex-cli 0.131.0"
   const dependencies: CliDependencies = {
     rootDirectory: "/tmp/fake-root",
     resolveRuntimeContext: async (codexPath) => {
       calls.push(`resolve:${codexPath ?? "default"}`)
       return runtimeContext
+    },
+    shim: {
+      environment: {},
+      get isTTY() { return shimIsTTY },
+      guardVersion: "0.3.0",
+      cliEntryPath: "/guard/dist/src/cli.js",
+      resolveSavedExecutable: async (codexPath): Promise<ResolvedCodexExecutable> => {
+        calls.push(`saved-resolve:${codexPath}`)
+        return {
+          codexExecutable: codexPath,
+          codexExecutableRealPath: codexPath,
+          codexVersion: observedVersion,
+          executableSelectionSource: "cli",
+          launchAllowed: true,
+          discoveredCandidates: [],
+        }
+      },
+      runChild: async (executable, args) => {
+        childCalls.push({ executable, args: [...args] })
+        return childExitCode
+      },
+      promptUnknown: async () => unknownChoice,
+      writeError: (value) => errors.push(value),
     },
     createController: (context) => {
       expect(context).toBe(runtimeContext)
@@ -150,6 +180,8 @@ function setup() {
   }
   return {
     calls,
+    errors,
+    childCalls,
     output,
     dependencies,
     controller,
@@ -157,6 +189,24 @@ function setup() {
     runtimeContext,
     interactiveSession,
     setGlobalConfig(value: GlobalGuardConfig) { globalConfig = structuredClone(value) },
+    getGlobalConfig() { return structuredClone(globalConfig) },
+    enableShell(options: { defaultProtection?: boolean; savedVersion?: string } = {}) {
+      const config = defaultGlobalGuardConfig()
+      config.defaultInteractiveProtection = options.defaultProtection ?? true
+      config.realCodexExecutable = "/real/selected/codex"
+      config.realCodexVersion = options.savedVersion ?? "codex-cli 0.100.0"
+      config.shellIntegration = {
+        enabled: true,
+        shimDirectory: "/home/me/.local/share/codex-quota-guard/shims",
+        installedAt: "2026-07-13T00:00:00.000Z",
+        shells: [{ shell: "zsh", profilePath: "/home/me/.zshrc" }],
+      }
+      globalConfig = config
+    },
+    setChildExitCode(value: number) { childExitCode = value },
+    setShimIsTTY(value: boolean) { shimIsTTY = value },
+    setUnknownChoice(value: string) { unknownChoice = value },
+    setObservedVersion(value: string) { observedVersion = value },
   }
 }
 
@@ -173,6 +223,7 @@ describe("executeCli", () => {
     expect(test.output[0]).toContain("--codex-path <绝对路径>")
     expect(test.output[0]).toContain("codex-quota-guard interactive")
     expect(test.output[0]).toContain("任务提示请在 TUI 内输入")
+    expect(test.output[0]).not.toContain("__shim")
   })
 
   it("interactive 只构造一次上下文、持锁并原样返回 TUI 退出码", async () => {
@@ -277,6 +328,15 @@ describe("executeCli", () => {
     expect(test.output.at(-1)).toContain("installed")
   })
 
+  it("重复 shell install 不从已接管的 PATH 选 shim，而复用保存的真实路径", async () => {
+    const test = setup()
+    test.enableShell()
+
+    expect(await executeCli(["shell", "install"], test.dependencies)).toBe(0)
+
+    expect(test.calls).toEqual(["resolve:/real/selected/codex", "shell:install"])
+  })
+
   it("shell status 和 uninstall 不解析运行上下文或取得任务锁", async () => {
     const status = setup()
     expect(await executeCli(["shell", "status", "--json"], status.dependencies)).toBe(0)
@@ -290,6 +350,203 @@ describe("executeCli", () => {
     expect(await executeCli(["shell", "uninstall"], uninstall.dependencies)).toBe(0)
     expect(uninstall.calls).toEqual(["shell:uninstall"])
     expect(uninstall.output.at(-1)).toContain("uninstalled")
+  })
+
+  it("隐藏 identity 只返回已验证的保存绝对路径", async () => {
+    const test = setup()
+    test.enableShell()
+
+    expect(await executeCli(["__shim", "identity"], test.dependencies)).toBe(0)
+
+    expect(test.calls).toEqual(["saved-resolve:/real/selected/codex"])
+    expect(test.output).toEqual(["/real/selected/codex"])
+    expect(test.childCalls).toEqual([])
+  })
+
+  it("codex-raw 和单次 BYPASS 原样执行保存路径并保留退出码", async () => {
+    const raw = setup()
+    raw.enableShell()
+    raw.setChildExitCode(37)
+
+    expect(await executeCli([
+      "__shim",
+      "codex-raw",
+      "exec",
+      "path with spaces",
+    ], raw.dependencies)).toBe(37)
+    expect(raw.childCalls).toEqual([{
+      executable: "/real/selected/codex",
+      args: ["exec", "path with spaces"],
+    }])
+    expect(raw.errors.join("\n")).toContain("未受额度保护")
+
+    const bypass = setup()
+    bypass.enableShell()
+    bypass.dependencies.shim.environment.CODEX_QUOTA_GUARD_BYPASS = "1"
+    expect(await executeCli([
+      "__shim",
+      "codex",
+      "login",
+    ], bypass.dependencies)).toBe(0)
+    expect(bypass.childCalls[0]).toEqual({
+      executable: "/real/selected/codex",
+      args: ["login"],
+    })
+  })
+
+  it("非 TTY raw 不污染公开输出或错误输出", async () => {
+    const test = setup()
+    test.enableShell()
+    test.setShimIsTTY(false)
+
+    expect(await executeCli(["__shim", "codex-raw", "--version"], test.dependencies)).toBe(0)
+    expect(test.output).toEqual([])
+    expect(test.errors).toEqual([])
+  })
+
+  it("管理命令只说明一次并直接执行真实 Codex", async () => {
+    const test = setup()
+    test.enableShell()
+
+    expect(await executeCli(["__shim", "codex", "mcp", "list"], test.dependencies)).toBe(0)
+
+    expect(test.errors).toHaveLength(1)
+    expect(test.errors[0]).toContain("原生管理命令")
+    expect(test.childCalls[0]).toEqual({
+      executable: "/real/selected/codex",
+      args: ["mcp", "list"],
+    })
+  })
+
+  it("codex exec 明确拒绝并给出两条安全替代路径", async () => {
+    const test = setup()
+    test.enableShell()
+
+    expect(await executeCli(["__shim", "codex", "exec", "x"], test.dependencies)).toBe(2)
+
+    expect(test.errors.join("\n")).toContain("codex-quota-guard run")
+    expect(test.errors.join("\n")).toContain("codex-raw exec")
+    expect(test.childCalls).toEqual([])
+  })
+
+  it("未知命令非 TTY 拒绝，TTY 仅明确输入 raw 才旁路", async () => {
+    const nonTty = setup()
+    nonTty.enableShell()
+    nonTty.setShimIsTTY(false)
+    expect(await executeCli([
+      "__shim",
+      "codex",
+      "future-command",
+    ], nonTty.dependencies)).toBe(2)
+    expect(nonTty.childCalls).toEqual([])
+
+    const tty = setup()
+    tty.enableShell()
+    tty.setUnknownChoice("raw")
+    expect(await executeCli([
+      "__shim",
+      "codex",
+      "future-command",
+    ], tty.dependencies)).toBe(0)
+    expect(tty.childCalls[0].args).toEqual(["future-command"])
+
+    const cancel = setup()
+    cancel.enableShell()
+    cancel.setUnknownChoice("")
+    expect(await executeCli([
+      "__shim",
+      "codex",
+      "future-command",
+    ], cancel.dependencies)).toBe(2)
+    expect(cancel.childCalls).toEqual([])
+  })
+
+  it("wrapper version 同时显示工具、保存路径、保存和实测版本", async () => {
+    const test = setup()
+    test.enableShell({ savedVersion: "codex-cli old" })
+    test.setObservedVersion("codex-cli new")
+
+    expect(await executeCli(["__shim", "codex", "--version"], test.dependencies)).toBe(0)
+
+    expect(test.output[0]).toContain("0.3.0")
+    expect(test.output[0]).toContain("/real/selected/codex")
+    expect(test.output[0]).toContain("codex-cli old")
+    expect(test.output[0]).toContain("codex-cli new")
+  })
+
+  it("guarded interactive 重新探测当前保存路径，成功后才更新版本", async () => {
+    const test = setup()
+    test.enableShell({ savedVersion: "codex-cli old" })
+    test.runtimeContext.executable.codexVersion = "codex-cli new"
+
+    expect(await executeCli([
+      "__shim",
+      "codex",
+      "--model",
+      "gpt-test",
+    ], test.dependencies)).toBe(7)
+
+    expect(test.calls).toContain("resolve:/real/selected/codex")
+    expect(test.calls).toContain(
+      "interactive:run:{\"tuiArgs\":[\"--model\",\"gpt-test\"],\"requireProtection\":false}",
+    )
+    expect(test.getGlobalConfig().realCodexVersion).toBe("codex-cli new")
+  })
+
+  it("guarded interactive 缺少 remote 能力时拒绝并保留旧版本", async () => {
+    const test = setup()
+    test.enableShell({ savedVersion: "codex-cli old" })
+    test.runtimeContext.executable.codexVersion = "codex-cli new"
+    test.runtimeContext.remoteCapabilities.remoteUnixSocket = false
+
+    await expect(executeCli(["__shim", "codex"], test.dependencies))
+      .rejects.toThrow("remoteUnixSocket")
+
+    expect(test.getGlobalConfig().realCodexVersion).toBe("codex-cli old")
+    expect(test.calls).not.toContain("interactive:create")
+  })
+
+  it("关闭默认交互保护时明确拒绝而不静默 raw", async () => {
+    const test = setup()
+    test.enableShell({ defaultProtection: false })
+
+    expect(await executeCli(["__shim", "codex"], test.dependencies)).toBe(2)
+
+    expect(test.errors.join("\n")).toContain("codex-raw")
+    expect(test.childCalls).toEqual([])
+    expect(test.calls).not.toContain("interactive:create")
+  })
+
+  it.each([
+    "/guard/dist/src/cli.js",
+    "/home/me/.local/share/codex-quota-guard/shims/codex",
+  ])("保存路径指向 Guard 自身时在执行 resolver 前拒绝递归：%s", async (savedPath) => {
+    const test = setup()
+    test.enableShell()
+    const config = test.getGlobalConfig()
+    config.realCodexExecutable = savedPath
+    test.setGlobalConfig(config)
+
+    await expect(executeCli(["__shim", "codex-raw", "--version"], test.dependencies))
+      .rejects.toThrow("拒绝递归")
+
+    expect(test.calls).toEqual([])
+    expect(test.childCalls).toEqual([])
+  })
+
+  it("保存路径不可执行时提示 doctor 且不查询 PATH", async () => {
+    const test = setup()
+    test.enableShell()
+    test.dependencies.shim.resolveSavedExecutable = async (codexPath) => {
+      test.calls.push(`saved-failed:${codexPath}`)
+      throw new Error("EACCES")
+    }
+
+    await expect(executeCli(["__shim", "codex-raw", "login"], test.dependencies))
+      .rejects.toThrow("codex-quota-guard doctor")
+
+    expect(test.calls).toEqual(["saved-failed:/real/selected/codex"])
+    expect(test.childCalls).toEqual([])
   })
 
   it.each([

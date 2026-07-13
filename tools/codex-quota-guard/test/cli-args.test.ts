@@ -7,6 +7,32 @@ describe("parseCliArgs", () => {
     expect(parseCliArgs(["help"])).toEqual({ command: "help" })
   })
 
+  it("只为受管 shim 解析隐藏入口且不解释其参数", () => {
+    expect(parseCliArgs(["__shim", "codex", "--model", "gpt-5"])).toEqual({
+      command: "__shim",
+      entry: "codex",
+      args: ["--model", "gpt-5"],
+    })
+    expect(parseCliArgs(["__shim", "codex-raw", "exec", "x"])).toEqual({
+      command: "__shim",
+      entry: "codex-raw",
+      args: ["exec", "x"],
+    })
+    expect(parseCliArgs(["__shim", "identity"])).toEqual({
+      command: "__shim",
+      entry: "identity",
+      args: [],
+    })
+  })
+
+  it.each([
+    ["__shim"],
+    ["__shim", "unknown"],
+    ["__shim", "identity", "extra"],
+  ])("拒绝伪造或格式错误的隐藏 shim 入口：%s", (...args) => {
+    expect(() => parseCliArgs(args)).toThrow()
+  })
+
   it("doctor 只有显式参数才选择 live canary", () => {
     expect(parseCliArgs(["doctor", "--live-canary", "--json"])).toEqual({
       command: "doctor",

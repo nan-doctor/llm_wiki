@@ -1,6 +1,11 @@
 export type ParsedCliArgs =
   | { command: "help" }
   | {
+      command: "__shim"
+      entry: "codex" | "codex-raw" | "identity"
+      args: string[]
+    }
+  | {
       command: "shell"
       operation: "install"
       codexPath: string | undefined
@@ -49,6 +54,16 @@ export type ParsedCliArgs =
 
 export function parseCliArgs(args: string[]): ParsedCliArgs {
   const [command, ...rest] = args
+  if (command === "__shim") {
+    const [entry, ...shimArgs] = rest
+    if (entry !== "codex" && entry !== "codex-raw" && entry !== "identity") {
+      throw new Error(`无效的受管 shim 入口：${entry ?? "(空)"}`)
+    }
+    if (entry === "identity" && shimArgs.length > 0) {
+      throw new Error("__shim identity 不接受参数")
+    }
+    return { command, entry, args: shimArgs }
+  }
   if (command === "--help" || command === "-h" || command === "help") {
     if (rest.length > 0) throw new Error("help 不接受其他参数")
     return { command: "help" }

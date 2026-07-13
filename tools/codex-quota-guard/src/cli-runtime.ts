@@ -1,11 +1,14 @@
+import path from "node:path"
 import type { DoctorResult } from "./doctor.js"
 import type { ResumeOptions, RunOptions, StartedTurn } from "./guard/controller.js"
 import type { PersistedGuardState, TurnAdmission } from "./guard/state-machine.js"
 import { parseCliArgs } from "./cli-args.js"
 import { sanitizeDiagnostic } from "./persistence/state-store.js"
 import type { RuntimeContext } from "./runtime/runtime-context.js"
+import type { ResolvedCodexExecutable } from "./runtime/types.js"
 import type { InteractiveRunOptions } from "./interactive/session.js"
 import type { ShellOperationResult } from "./shell/installer.js"
+import { routeShim } from "./shell/router.js"
 import type { GuardConfig } from "./persistence/config-store.js"
 import type {
   GlobalConfigStore,
@@ -30,6 +33,17 @@ export interface CliShellInstaller {
   uninstall(): Promise<ShellOperationResult>
 }
 
+export interface CliShimDependencies {
+  environment: NodeJS.ProcessEnv
+  readonly isTTY: boolean
+  guardVersion: string
+  cliEntryPath: string
+  resolveSavedExecutable(codexPath: string): Promise<ResolvedCodexExecutable>
+  runChild(executable: string, args: string[]): Promise<number>
+  promptUnknown(args: string[]): Promise<string>
+  writeError(value: string): void
+}
+
 export interface CliDependencies {
   rootDirectory: string
   resolveRuntimeContext(codexPath: string | undefined): Promise<RuntimeContext>
@@ -39,6 +53,7 @@ export interface CliDependencies {
     stop(reason: string): Promise<void>
   }
   createShellInstaller(): CliShellInstaller
+  shim: CliShimDependencies
   platform: NodeJS.Platform
   globalConfigStore: Pick<GlobalConfigStore, "load" | "update">
   loadProjectConfig(): Promise<GuardConfig | null>
@@ -53,6 +68,9 @@ export async function executeCli(
   dependencies: CliDependencies,
 ): Promise<number> {
   const parsed = parseCliArgs(args)
+  if (parsed.command === "__shim") {
+    return await executeShim(parsed, dependencies)
+  }
   if (parsed.command === "help") {
     dependencies.writeOutput(formatHelp())
     return 0
@@ -87,11 +105,19 @@ export async function executeCli(
   }
   if (parsed.command === "shell") {
     const installer = dependencies.createShellInstaller()
-    const result = parsed.operation === "install"
-      ? await installer.install(await dependencies.resolveRuntimeContext(parsed.codexPath))
-      : parsed.operation === "status"
+    let result: ShellOperationResult
+    if (parsed.operation === "install") {
+      const global = await dependencies.globalConfigStore.load()
+      const codexPath = parsed.codexPath
+        ?? (global.shellIntegration.enabled
+          ? global.realCodexExecutable ?? undefined
+          : undefined)
+      result = await installer.install(await dependencies.resolveRuntimeContext(codexPath))
+    } else {
+      result = parsed.operation === "status"
         ? await installer.status()
         : await installer.uninstall()
+    }
     dependencies.writeOutput(
       parsed.operation === "status" && parsed.json
         ? JSON.stringify(result, null, 2)
@@ -120,32 +146,10 @@ export async function executeCli(
   if (parsed.command === "interactive") {
     const global = await dependencies.globalConfigStore.load()
     const context = await dependencies.resolveRuntimeContext(parsed.codexPath)
-    assertLaunchAllowed(context)
-    assertInteractiveCapabilities(context, dependencies.platform)
-    let lock: Awaited<ReturnType<CliDependencies["acquireLock"]>>
-    try {
-      lock = await dependencies.acquireLock()
-    } catch (error) {
-      throw contextualRuntimeError(error, context)
-    }
-    let session: ReturnType<CliDependencies["createInteractiveSession"]>
-    try {
-      session = dependencies.createInteractiveSession(context)
-    } catch (error) {
-      await lock.release()
-      throw contextualRuntimeError(error, context)
-    }
-    try {
-      return await session.run({
-        tuiArgs: parsed.tuiArgs,
-        requireProtection: parsed.requireProtection || global.defaultRequireProtection,
-      })
-    } catch (error) {
-      throw contextualRuntimeError(error, context)
-    } finally {
-      await session.stop("cli-finally")
-      await lock.release()
-    }
+    return await executeInteractiveSession(context, {
+      tuiArgs: parsed.tuiArgs,
+      requireProtection: parsed.requireProtection || global.defaultRequireProtection,
+    }, dependencies)
   }
 
   const context = await dependencies.resolveRuntimeContext(parsed.codexPath)
@@ -221,6 +225,231 @@ export async function executeCli(
   }
 }
 
+async function executeShim(
+  parsed: Extract<ReturnType<typeof parseCliArgs>, { command: "__shim" }>,
+  dependencies: CliDependencies,
+): Promise<number> {
+  const config = await dependencies.globalConfigStore.load()
+  const savedPath = requireSavedCodex(config, dependencies.platform)
+  if (parsed.entry === "identity") {
+    const resolved = await resolveAndValidateSavedCodex(savedPath, config, dependencies)
+    dependencies.writeOutput(resolved.codexExecutableRealPath!)
+    return 0
+  }
+
+  const route = routeShim(parsed.entry, parsed.args, dependencies.shim.environment)
+  if (route.kind === "interactive") {
+    if (!config.defaultInteractiveProtection) {
+      await resolveAndValidateSavedCodex(savedPath, config, dependencies)
+      dependencies.shim.writeError([
+        "默认交互保护已关闭，拒绝把 codex 静默转为原始调用。",
+        "需要明确旁路时请使用 codex-raw。",
+      ].join("\n"))
+      return 2
+    }
+    assertSavedPathNotRecursive(savedPath, config, dependencies)
+    const context = await dependencies.resolveRuntimeContext(savedPath)
+    validateResolvedCodex(context.executable, savedPath, config, dependencies)
+    return await executeInteractiveSession(context, {
+      tuiArgs: route.tuiArgs,
+      requireProtection: config.defaultRequireProtection,
+    }, dependencies, async () => {
+      await dependencies.globalConfigStore.update((latest) => {
+        if (latest.realCodexExecutable !== savedPath) {
+          throw new Error("shell 配置在启动期间发生变化，拒绝更新版本身份")
+        }
+        latest.realCodexVersion = context.executable.codexVersion
+      })
+    })
+  }
+
+  const resolved = await resolveAndValidateSavedCodex(savedPath, config, dependencies)
+  const executable = resolved.codexExecutableRealPath!
+  if (route.kind === "raw") {
+    if (dependencies.shim.isTTY) {
+      dependencies.shim.writeError(
+        "警告：本次调用未受额度保护；不会改变现有 HANDLED 记录。",
+      )
+    }
+    return await dependencies.shim.runChild(executable, route.args)
+  }
+  if (route.kind === "management") {
+    dependencies.shim.writeError(
+      `Codex Quota Guard：正在执行原生管理命令 ${route.args[0]}。`,
+    )
+    return await dependencies.shim.runChild(executable, route.args)
+  }
+  if (route.kind === "version") {
+    dependencies.writeOutput([
+      `Codex Quota Guard wrapper ${dependencies.shim.guardVersion}`,
+      `真实 Codex：${executable}`,
+      `保存版本：${config.realCodexVersion ?? "UNKNOWN"}`,
+      `实测版本：${resolved.codexVersion ?? "UNKNOWN"}`,
+      "纯原始版本：codex-raw --version",
+    ].join("\n"))
+    return 0
+  }
+  if (route.kind === "reject-exec") {
+    dependencies.shim.writeError([
+      "当前 wrapper 尚不能完整保持 codex exec 的参数和退出语义，已拒绝执行。",
+      "受保护执行请使用：codex-quota-guard run <提示>",
+      "明确无保护执行请使用：codex-raw exec ...",
+    ].join("\n"))
+    return 2
+  }
+  if (route.kind === "reject") {
+    dependencies.shim.writeError(route.message)
+    return 2
+  }
+
+  dependencies.shim.writeError([
+    `未识别的 Codex 子命令：${JSON.stringify(route.args)}`,
+    "不会把它当作任务提示词，也不会静默绕过保护。",
+  ].join("\n"))
+  if (!dependencies.shim.isTTY) return 2
+  const choice = await dependencies.shim.promptUnknown(route.args)
+  if (choice !== "raw") {
+    dependencies.shim.writeError("已取消；如需受保护任务，请直接运行 codex 并在 TUI 内输入。")
+    return 2
+  }
+  dependencies.shim.writeError("警告：用户已明确选择 raw，本次调用未受额度保护。")
+  return await dependencies.shim.runChild(executable, route.args)
+}
+
+async function executeInteractiveSession(
+  context: RuntimeContext,
+  options: InteractiveRunOptions,
+  dependencies: CliDependencies,
+  afterValidation?: () => Promise<void>,
+): Promise<number> {
+  assertLaunchAllowed(context)
+  assertInteractiveCapabilities(context, dependencies.platform)
+  await afterValidation?.()
+  let lock: Awaited<ReturnType<CliDependencies["acquireLock"]>>
+  try {
+    lock = await dependencies.acquireLock()
+  } catch (error) {
+    throw contextualRuntimeError(error, context)
+  }
+  let session: ReturnType<CliDependencies["createInteractiveSession"]>
+  try {
+    session = dependencies.createInteractiveSession(context)
+  } catch (error) {
+    await lock.release()
+    throw contextualRuntimeError(error, context)
+  }
+  try {
+    return await session.run(options)
+  } catch (error) {
+    throw contextualRuntimeError(error, context)
+  } finally {
+    await session.stop("cli-finally")
+    await lock.release()
+  }
+}
+
+function requireSavedCodex(
+  config: GlobalGuardConfig,
+  platform: NodeJS.Platform,
+): string {
+  if (!config.shellIntegration.enabled || !config.realCodexExecutable) {
+    throw new Error("默认 Codex shell 集成未安装或缺少真实路径；请重新运行 shell install")
+  }
+  const platformPath = platform === "win32" ? path.win32 : path.posix
+  if (!platformPath.isAbsolute(config.realCodexExecutable)) {
+    throw new Error("保存的真实 Codex 不是绝对路径；请运行 doctor 后重新安装")
+  }
+  return config.realCodexExecutable
+}
+
+async function resolveAndValidateSavedCodex(
+  savedPath: string,
+  config: GlobalGuardConfig,
+  dependencies: CliDependencies,
+): Promise<ResolvedCodexExecutable> {
+  assertSavedPathNotRecursive(savedPath, config, dependencies)
+  let resolved: ResolvedCodexExecutable
+  try {
+    resolved = await dependencies.shim.resolveSavedExecutable(savedPath)
+  } catch (error) {
+    const message = sanitizeDiagnostic(error instanceof Error ? error.message : String(error))
+    throw new Error(`保存的真实 Codex 不可用：${message}；请运行 codex-quota-guard doctor`)
+  }
+  validateResolvedCodex(resolved, savedPath, config, dependencies)
+  return resolved
+}
+
+function assertSavedPathNotRecursive(
+  savedPath: string,
+  config: GlobalGuardConfig,
+  dependencies: CliDependencies,
+): void {
+  const forbidden = forbiddenGuardPaths(config, dependencies)
+  if (forbidden.some((candidate) => samePlatformPath(
+    savedPath,
+    candidate,
+    dependencies.platform,
+  ))) {
+    throw new Error("保存的真实 Codex 指向 Guard 或 shim，拒绝递归；请运行 doctor")
+  }
+}
+
+function validateResolvedCodex(
+  resolved: ResolvedCodexExecutable,
+  savedPath: string,
+  config: GlobalGuardConfig,
+  dependencies: CliDependencies,
+): void {
+  const realPath = resolved.codexExecutableRealPath
+  if (!resolved.launchAllowed || !realPath || !resolved.codexVersion) {
+    throw new Error("保存的真实 Codex 未通过可执行文件验证；请运行 doctor")
+  }
+  if (!samePlatformPath(realPath, savedPath, dependencies.platform)) {
+    throw new Error(`保存的真实 Codex 身份漂移到 ${realPath}；请运行 doctor 后重新安装`)
+  }
+  const forbidden = forbiddenGuardPaths(config, dependencies)
+  if (forbidden.some((candidate) => samePlatformPath(
+    realPath,
+    candidate,
+    dependencies.platform,
+  ))) {
+    throw new Error("保存的真实 Codex 指向 Guard 或 shim，拒绝递归；请运行 doctor")
+  }
+}
+
+function forbiddenGuardPaths(
+  config: GlobalGuardConfig,
+  dependencies: CliDependencies,
+): string[] {
+  const forbidden = [dependencies.shim.cliEntryPath]
+  if (!config.shellIntegration.shimDirectory) return forbidden
+  const platformPath = pathFor(dependencies.platform)
+  forbidden.push(
+    platformPath.join(config.shellIntegration.shimDirectory, "codex"),
+    platformPath.join(config.shellIntegration.shimDirectory, "codex-raw"),
+    platformPath.join(config.shellIntegration.shimDirectory, "codex.cmd"),
+    platformPath.join(config.shellIntegration.shimDirectory, "codex-raw.cmd"),
+  )
+  return forbidden
+}
+
+function pathFor(platform: NodeJS.Platform): typeof path.posix | typeof path.win32 {
+  return platform === "win32" ? path.win32 : path.posix
+}
+
+function samePlatformPath(
+  first: string,
+  second: string,
+  platform: NodeJS.Platform,
+): boolean {
+  const platformPath = pathFor(platform)
+  const normalize = (value: string) => {
+    const resolved = platformPath.resolve(value)
+    return platform === "win32" ? resolved.toLowerCase() : resolved
+  }
+  return normalize(first) === normalize(second)
+}
+
 function formatConfig(
   global: GlobalGuardConfig,
   project: { codexPath: string | null; source: string },
@@ -242,6 +471,11 @@ function formatShellResult(result: ShellOperationResult): string {
     result.shell ? `shell=${result.shell}` : null,
     result.profilePath ? `profilePath=${result.profilePath}` : null,
     result.shimDirectory ? `shimDirectory=${result.shimDirectory}` : null,
+    result.healthy === undefined ? null : `healthy=${String(result.healthy)}`,
+    result.observedCodexVersion
+      ? `observedCodexVersion=${result.observedCodexVersion}`
+      : null,
+    ...(result.issues ?? []).map((issue) => `issue=${issue}`),
   ].filter((line): line is string => line !== null).join("\n")
 }
 

@@ -17,6 +17,7 @@ import type {
   SupportedShell,
 } from "../persistence/global-config-store.js"
 import type { RuntimeContext } from "../runtime/runtime-context.js"
+import { sanitizeDiagnostic } from "../persistence/state-store.js"
 import type { CurrentShell } from "./current-shell.js"
 import {
   addProfileBlock,
@@ -44,6 +45,7 @@ export interface ShellInstallerOptions {
   writeOutput(line: string): void
   verifyInstallation(details: ShellVerificationDetails): Promise<void>
   currentPath?: string
+  inspectRealCodexVersion?(codexPath: string): Promise<string>
 }
 
 export interface ShellVerificationDetails {
@@ -66,6 +68,7 @@ export interface ShellOperationResult {
   shimDirectory?: string
   healthy?: boolean
   issues?: string[]
+  observedCodexVersion?: string
 }
 
 interface FileSnapshot {
@@ -123,6 +126,21 @@ export class ShellInstaller {
     if (!config.realCodexExecutable || !config.realCodexVersion) {
       issues.push("保存的真实 Codex 路径或版本缺失")
     }
+    let observedCodexVersion: string | undefined
+    if (config.realCodexExecutable && this.options.inspectRealCodexVersion) {
+      try {
+        observedCodexVersion = await this.options.inspectRealCodexVersion(
+          config.realCodexExecutable,
+        )
+        if (config.realCodexVersion && observedCodexVersion !== config.realCodexVersion) {
+          issues.push(
+            `真实 Codex 版本漂移：保存=${config.realCodexVersion}，实测=${observedCodexVersion}`,
+          )
+        }
+      } catch (error) {
+        issues.push(`真实 Codex 版本检查失败：${errorMessage(error)}`)
+      }
+    }
     const currentPath = this.options.currentPath ?? process.env.PATH ?? ""
     const delimiter = this.options.platform === "win32" ? ";" : ":"
     const firstPath = currentPath.split(delimiter).find(Boolean)
@@ -135,6 +153,7 @@ export class ShellInstaller {
       shimDirectory,
       healthy: issues.length === 0,
       issues,
+      observedCodexVersion,
     }
   }
 
@@ -438,6 +457,10 @@ async function atomicWriteFile(
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error
+}
+
+function errorMessage(error: unknown): string {
+  return sanitizeDiagnostic(error instanceof Error ? error.message : String(error))
 }
 
 function samePath(first: string, second: string, platform: NodeJS.Platform): boolean {
