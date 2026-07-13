@@ -30,6 +30,7 @@ describe("inspectGeneratedProtocol", () => {
         "account/rateLimits/read",
         "turn/start",
         "turn/interrupt",
+        "thread/read",
         "thread/goal/get",
         "thread/goal/set",
         "thread/backgroundTerminals/clean",
@@ -37,6 +38,9 @@ describe("inspectGeneratedProtocol", () => {
     }))
     await writeFile(path.join(root, "ServerNotification.json"), JSON.stringify({
       methods: ["account/rateLimits/updated", "turn/completed", "item/completed"],
+    }))
+    await writeFile(path.join(root, "ServerRequest.json"), JSON.stringify({
+      oneOf: [{ title: "item/commandExecution/requestApproval" }],
     }))
     await writeFile(path.join(root, "v2", "ThreadGoalSetParams.json"), JSON.stringify({
       definitions: {
@@ -51,10 +55,13 @@ describe("inspectGeneratedProtocol", () => {
       rateLimitsUpdated: true,
       turnStart: true,
       turnInterrupt: true,
+      threadRead: true,
       goalGet: true,
       goalSet: true,
       goalPaused: true,
+      goalResume: true,
       backgroundTerminalsClean: true,
+      serverRequestHandling: true,
     })
   })
 
@@ -126,16 +133,26 @@ describe("buildCapabilityMatrix", () => {
       rateLimitsUpdated: true,
       turnStart: true,
       turnInterrupt: true,
+      threadRead: true,
       goalGet: true,
       goalSet: true,
       goalPaused: true,
+      goalResume: true,
       backgroundTerminalsClean: true,
+      serverRequestHandling: true,
     }, { rateLimitsRead: true })
 
-    expect(matrix.rateLimitsRead).toEqual({ schemaDetected: true, runtimeVerified: true })
-    expect(matrix.turnStart).toEqual({ schemaDetected: true, runtimeVerified: null })
-    expect(matrix.turnInterrupt).toEqual({ schemaDetected: true, runtimeVerified: null })
-    expect(matrix.goalPaused).toEqual({ schemaDetected: true, runtimeVerified: null })
+    expect(matrix.rateLimitsRead).toMatchObject({
+      schemaDetected: true,
+      runtimeVerified: true,
+      status: "runtimeVerified",
+    })
+    expect(matrix.turnStart.status).toBe("schemaDetected")
+    expect(matrix.turnInterrupt.status).toBe("schemaDetected")
+    expect(matrix.threadRead.status).toBe("schemaDetected")
+    expect(matrix.goalPaused.status).toBe("schemaDetected")
+    expect(matrix.goalResume.status).toBe("schemaDetected")
+    expect(matrix.serverRequestHandling.status).toBe("schemaDetected")
   })
 })
 

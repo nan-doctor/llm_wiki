@@ -1,29 +1,21 @@
 import { spawn } from "node:child_process"
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises"
+import { mkdtemp, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { AppServerManager } from "./app-server/manager.js"
 import { ProcessAppServerConnection } from "./app-server/process-connection.js"
 import { normalizeRateLimits } from "./quota/normalize.js"
 import type { ThreadGoal } from "./app-server/protocol.js"
+import {
+  buildCapabilityMatrix,
+  emptyCapabilities,
+  inspectGeneratedProtocol,
+  type CapabilityMatrix,
+  type ProtocolCapabilities,
+} from "./runtime/capabilities.js"
 
-export interface ProtocolCapabilities {
-  rateLimitsRead: boolean
-  rateLimitsUpdated: boolean
-  turnStart: boolean
-  turnInterrupt: boolean
-  goalGet: boolean
-  goalSet: boolean
-  goalPaused: boolean
-  backgroundTerminalsClean: boolean
-}
-
-export type CapabilityMatrix = {
-  [Key in keyof ProtocolCapabilities]: {
-    schemaDetected: boolean
-    runtimeVerified: boolean | null
-  }
-}
+export { buildCapabilityMatrix, inspectGeneratedProtocol } from "./runtime/capabilities.js"
+export type { CapabilityMatrix, ProtocolCapabilities } from "./runtime/capabilities.js"
 
 export interface LiveCanaryResult {
   attempted: true
@@ -73,37 +65,6 @@ export interface DoctorResult {
   liveCanary: LiveCanaryResult | null
   warnings: string[]
   errors: string[]
-}
-
-export async function inspectGeneratedProtocol(directory: string): Promise<ProtocolCapabilities> {
-  const contents = await readAllTextFiles(directory)
-  const has = (value: string): boolean => contents.includes(value)
-  const goalPaused = await inspectGoalPaused(directory)
-  return {
-    rateLimitsRead: has("account/rateLimits/read"),
-    rateLimitsUpdated: has("account/rateLimits/updated"),
-    turnStart: has("turn/start"),
-    turnInterrupt: has("turn/interrupt"),
-    goalGet: has("thread/goal/get"),
-    goalSet: has("thread/goal/set"),
-    goalPaused,
-    backgroundTerminalsClean: has("thread/backgroundTerminals/clean"),
-  }
-}
-
-async function inspectGoalPaused(directory: string): Promise<boolean> {
-  try {
-    const schema = JSON.parse(await readFile(
-      path.join(directory, "v2", "ThreadGoalSetParams.json"),
-      "utf8",
-    )) as {
-      definitions?: { ThreadGoalStatus?: { enum?: unknown } }
-    }
-    const statuses = schema.definitions?.ThreadGoalStatus?.enum
-    return Array.isArray(statuses) && statuses.includes("paused")
-  } catch {
-    return false
-  }
 }
 
 export async function runDoctor(
@@ -192,6 +153,7 @@ export async function runDoctor(
     && capabilities.rateLimitsUpdated
     && capabilities.turnStart
     && capabilities.turnInterrupt
+    && capabilities.threadRead
   const versionAssessment = assessCodexVersion(codexVersion, schemaGenerated)
   if (versionAssessment.warning) warnings.push(versionAssessment.warning)
   if (rateLimitsRead && !fiveHourProtectionAvailable) {
@@ -426,26 +388,6 @@ async function restoreGoal(
   })
 }
 
-export function buildCapabilityMatrix(
-  schema: ProtocolCapabilities,
-  runtime: Partial<Record<keyof ProtocolCapabilities, boolean>> = {},
-): CapabilityMatrix {
-  const evidence = <Key extends keyof ProtocolCapabilities>(key: Key): CapabilityMatrix[Key] => ({
-    schemaDetected: schema[key],
-    runtimeVerified: runtime[key] === undefined ? null : runtime[key],
-  })
-  return {
-    rateLimitsRead: evidence("rateLimitsRead"),
-    rateLimitsUpdated: evidence("rateLimitsUpdated"),
-    turnStart: evidence("turnStart"),
-    turnInterrupt: evidence("turnInterrupt"),
-    goalGet: evidence("goalGet"),
-    goalSet: evidence("goalSet"),
-    goalPaused: evidence("goalPaused"),
-    backgroundTerminalsClean: evidence("backgroundTerminalsClean"),
-  }
-}
-
 export function assessCodexVersion(
   codexVersion: string | null,
   schemaGenerated: boolean,
@@ -486,21 +428,6 @@ export function classifyDoctorStatus(input: {
   return "ok"
 }
 
-async function readAllTextFiles(directory: string): Promise<string> {
-  const chunks: string[] = []
-  async function visit(current: string): Promise<void> {
-    for (const entry of await readdir(current, { withFileTypes: true })) {
-      const file = path.join(current, entry.name)
-      if (entry.isDirectory()) await visit(file)
-      else if (entry.name.endsWith(".json") || entry.name.endsWith(".ts")) {
-        chunks.push(await readFile(file, "utf8"))
-      }
-    }
-  }
-  await visit(directory)
-  return chunks.join("\n")
-}
-
 function runCommand(command: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true })
@@ -516,19 +443,6 @@ function runCommand(command: string, args: string[]): Promise<string> {
       else reject(new Error(`退出码 ${String(code)}：${stderr.trim()}`))
     })
   })
-}
-
-function emptyCapabilities(): ProtocolCapabilities {
-  return {
-    rateLimitsRead: false,
-    rateLimitsUpdated: false,
-    turnStart: false,
-    turnInterrupt: false,
-    goalGet: false,
-    goalSet: false,
-    goalPaused: false,
-    backgroundTerminalsClean: false,
-  }
 }
 
 function errorMessage(error: unknown): string {

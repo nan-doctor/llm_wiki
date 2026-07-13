@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { buildCapabilityMatrix, type ProtocolCapabilities } from "../src/doctor.js"
 import { createInitialState } from "../src/guard/state-machine.js"
 import { executeCli, type CliController, type CliDependencies } from "../src/cli-runtime.js"
 
@@ -23,6 +24,19 @@ function setup() {
     liveCanaryConsent: false,
     runDoctor: async (liveCanary = false) => {
       calls.push(`doctor:${String(liveCanary)}`)
+      const capabilities: ProtocolCapabilities = {
+        rateLimitsRead: true,
+        rateLimitsUpdated: true,
+        turnStart: true,
+        turnInterrupt: true,
+        threadRead: true,
+        goalGet: true,
+        goalSet: true,
+        goalPaused: true,
+        goalResume: true,
+        backgroundTerminalsClean: true,
+        serverRequestHandling: true,
+      }
       return ({
       ok: true,
       status: "ok",
@@ -35,26 +49,8 @@ function setup() {
         compatibilityBasis: "generated-schema",
         requiredCapabilitiesPresent: true,
       },
-      capabilities: {
-        rateLimitsRead: true,
-        rateLimitsUpdated: true,
-        turnStart: true,
-        turnInterrupt: true,
-        goalGet: true,
-        goalSet: true,
-        goalPaused: true,
-        backgroundTerminalsClean: true,
-      },
-      capabilityMatrix: {
-        rateLimitsRead: { schemaDetected: true, runtimeVerified: true },
-        rateLimitsUpdated: { schemaDetected: true, runtimeVerified: null },
-        turnStart: { schemaDetected: true, runtimeVerified: null },
-        turnInterrupt: { schemaDetected: true, runtimeVerified: null },
-        goalGet: { schemaDetected: true, runtimeVerified: null },
-        goalSet: { schemaDetected: true, runtimeVerified: null },
-        goalPaused: { schemaDetected: true, runtimeVerified: null },
-        backgroundTerminalsClean: { schemaDetected: true, runtimeVerified: null },
-      },
+      capabilities,
+      capabilityMatrix: buildCapabilityMatrix(capabilities, { rateLimitsRead: true }),
       liveCanary: null,
       warnings: [],
       errors: [],
