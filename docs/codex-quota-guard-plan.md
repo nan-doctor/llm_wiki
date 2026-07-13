@@ -1248,3 +1248,50 @@ git diff c6a6a99..HEAD --name-only
 - 完成标准 11—12：任务十的 tgz 仓库外安装与最终 HEAD 三平台 Actions。
 - 完成标准 13：任务九的 README、CHANGELOG 和 RELEASE_CHECKLIST。
 - 完成标准 14：任务十记录两套实际 Codex 的安全探测结果、未执行 canary 说明和逐项审计。
+
+## 0.2.0 实际验收记录（2026-07-13）
+
+### 本地质量门
+
+- `npm ci --ignore-scripts --cache /private/tmp/codex-quota-guard-npm-cache`：退出码 0，干净安装 48 个包。
+- `npm test`：退出码 0，16 个测试文件、130 项测试全部通过；全部使用 fake App Server，没有调用真实模型。
+- `npm run typecheck`、`npm run format:check`、`npm run build`、`npm ls --depth=0`、`npm pack --dry-run`：均退出码 0。
+- `npm pack` 生成 `codex-quota-guard-0.2.0.tgz`，共 30 个文件；包含 README、CHANGELOG、RELEASE_CHECKLIST 和 dist，不包含测试、`.codex-guard` 状态或认证文件。
+- tgz 安装到临时 prefix 后，macOS 平台等价入口位于 `node_modules/.bin/codex-quota-guard`；从仓库外目录执行 `--help` 成功，且帮助明确显示 `--codex-path <绝对路径>`。
+
+### resolver 与仓库外冒烟
+
+- 默认 `status --json` 和普通 `doctor --json`：`executableSelectionSource=path`。
+- `doctor --codex-path /Applications/ChatGPT.app/Contents/Resources/codex --json`：`executableSelectionSource=cli`。
+- `CODEX_QUOTA_GUARD_CODEX_PATH=/Applications/ChatGPT.app/Contents/Resources/codex doctor --json`：`executableSelectionSource=environment`。
+- 临时项目 `.codex-guard/config.json`：`executableSelectionSource=config`；切换到第二个空目录后恢复为 `path`，证明项目配置没有跨目录污染。
+- 同一 PATH Codex 连续两次 `status --json` 均得到协议指纹 `0e6e3124e7a98215157f57704470f1e9c56f920e52962068b5c6f27c9bf893cd` 且 `runtimeChanges=[]`。实机验收曾发现生成 schema 的对象键顺序不稳定；已增加规范化 JSON 指纹和回归测试，不再产生虚假协议漂移。
+
+### 实际 Codex 安全探测
+
+PATH Codex：
+
+- 选择路径：`/Users/wuluofei/.hermes/node/bin/codex`
+- 真实路径：`/Users/wuluofei/.hermes/node/lib/node_modules/@openai/codex/bin/codex.js`
+- 版本：`codex-cli 0.131.0`
+- 协议指纹：`0e6e3124e7a98215157f57704470f1e9c56f920e52962068b5c6f27c9bf893cd`
+- App Server 握手：成功；`account/rateLimits/read`：运行时验证成功。
+- schema：额度读取/更新、turn start/interrupt、thread read、Goal get/set/paused/resume、后台 terminal clean、双向 server request 全部存在。
+- 普通 doctor 未调用模型，因此除额度读取外的上述能力保持 `schemaDetected`，没有伪造 `runtimeVerified`。
+
+ChatGPT 应用内置 Codex：
+
+- 选择和真实路径：`/Applications/ChatGPT.app/Contents/Resources/codex`
+- 版本：`codex-cli 0.144.0-alpha.4`
+- 协议指纹：`2d5ff146d8cce80e45fbd35d05af9b42ece75ee75c8349ef98ee76831d0e258d`
+- App Server 握手：成功；`account/rateLimits/read`：运行时验证成功。
+- schema：与 PATH Codex 相同的 11 项目标能力全部存在；版本未列入本工具已认证版本，因此兼容性依据明确标为现场生成 schema。
+- 普通 doctor 未调用模型，除额度读取外的能力保持 `schemaDetected`。
+
+两套 Codex 的当前额度快照都只返回 weekly，没有有效 300 分钟窗口。普通 doctor 正确返回 `degraded` 而非 `failed`；`status` 显示 `guard=DORMANT`、`turns=ALLOWED`，没有用 weekly 触发中断。
+
+### 真实调用边界与最终 CI
+
+- 本轮没有执行 `doctor --live-canary`，没有启动真实模型 turn。
+- 普通 status/doctor 只完成 schema 生成、App Server 握手和额度读取。
+- 最终提交推送后查询该 SHA 对应的 Codex Quota Guard 三平台 workflow；为避免“记录 CI 结果”本身产生新的未验证提交，最终 CI 结果保留在任务完成报告中，不再回写计划文档。
