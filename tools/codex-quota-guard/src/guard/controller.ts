@@ -1,5 +1,12 @@
 import type { GetAccountRateLimitsResponse, ThreadGoal } from "../app-server/protocol.js"
 import { AppServerManager } from "../app-server/manager.js"
+import {
+  finalizeLatencies,
+  observeAuditPoint,
+  type AuditClock,
+  type AuditMonotonicPoints,
+  type AuditPoint,
+} from "../audit/timing.js"
 import { normalizeRateLimits } from "../quota/normalize.js"
 import type { GuardStateRepository } from "../persistence/repository.js"
 import type { ThresholdReporter } from "../report/reporter.js"
@@ -26,6 +33,7 @@ export interface GuardControllerOptions {
   unknownWaitMs?: number
   unknownRetryMs?: number
   runtimeContext?: RuntimeContext
+  auditClock?: AuditClock
 }
 
 export interface RunOptions {
@@ -54,6 +62,9 @@ export class GuardController {
   private readonly unknownWaitMs: number
   private readonly unknownRetryMs: number
   private readonly runtimeContext: RuntimeContext | null
+  private readonly auditClock: AuditClock
+  private readonly auditPoints = new Map<string, AuditMonotonicPoints>()
+  private lastQuotaObservation: { utcTimestamp: string; monotonicTimestamp: number } | null = null
   private state: PersistedGuardState = createInitialState()
   private readonly backgroundTasks = new Set<Promise<void>>()
   private readonly completedTurnStatuses = new Map<string, string>()
@@ -71,6 +82,10 @@ export class GuardController {
     this.unknownWaitMs = options.unknownWaitMs ?? 15_000
     this.unknownRetryMs = options.unknownRetryMs ?? 500
     this.runtimeContext = options.runtimeContext ?? null
+    this.auditClock = options.auditClock ?? {
+      utcNow: () => new Date(this.now()).toISOString(),
+      monotonicNow: () => performance.now(),
+    }
   }
 
   async start(): Promise<void> {
@@ -120,6 +135,7 @@ export class GuardController {
         )
         staleApplied = transition.state.quota?.severity === "UNKNOWN"
         this.state = transition.state
+        if (transition.event) this.initializeEventAudit(transition.event)
         await this.repository.save(this.state)
         if (transition.event?.target) await this.handleThresholdEvent(transition.event.id)
         else if (transition.event) await this.reporter.write(this.state)
@@ -252,6 +268,10 @@ export class GuardController {
   private async handleRateLimits(limits: GetAccountRateLimitsResponse): Promise<void> {
     await this.mutex.run(async () => {
       const quota = normalizeRateLimits(limits, this.now())
+      this.lastQuotaObservation = {
+        utcTimestamp: new Date(quota.observedAt).toISOString(),
+        monotonicTimestamp: this.auditClock.monotonicNow(),
+      }
       const transition = applyQuotaObservation(
         this.state,
         quota,
@@ -259,6 +279,7 @@ export class GuardController {
         this.now(),
       )
       this.state = transition.state
+      if (transition.event) this.initializeEventAudit(transition.event)
       await this.repository.save(this.state)
       if (!transition.event) return
       if (!transition.event.target) {
@@ -275,20 +296,25 @@ export class GuardController {
     const target = event.target
 
     event.interruptAttempted = true
+    this.observeEventAudit(event.id, "interruptRequested")
     try {
       await this.manager.request("turn/interrupt", {
         threadId: target.threadId,
         turnId: target.turnId,
       })
       event.interruptSucceeded = true
+      this.observeEventAudit(event.id, "interruptAcknowledged")
     } catch (error) {
       if (isIdempotentInterruptError(error)) {
         event.interruptSucceeded = true
+        this.observeEventAudit(event.id, "interruptAcknowledged")
       } else {
         event.interruptSucceeded = false
         event.errors.push(errorMessage(error))
       }
     }
+
+    await this.reconcileThresholdTerminalState(event.id)
 
     try {
       const response = await this.manager.request<{ goal: ThreadGoal | null }>(
@@ -298,11 +324,13 @@ export class GuardController {
       event.originalGoal = response.goal
       await this.repository.save(this.state)
       if (response.goal) {
+        this.observeEventAudit(event.id, "goalPauseRequested")
         await this.manager.request("thread/goal/set", {
           threadId: target.threadId,
           status: "paused",
         })
         event.goalPaused = true
+        this.observeEventAudit(event.id, "goalPauseAcknowledged")
         event.goalErrorCategory = null
         this.state.goalControl = "runtimeVerified"
       }
@@ -318,6 +346,7 @@ export class GuardController {
         threadId: target.threadId,
       })
       event.backgroundTerminalsCleaned = true
+      this.observeEventAudit(event.id, "backgroundTerminalCleaned")
     } catch (error) {
       event.backgroundTerminalsCleaned = false
       event.errors.push(errorMessage(error))
@@ -327,6 +356,7 @@ export class GuardController {
       && this.state.activeTurn.turnId === target.turnId) {
       this.state.activeTurn = null
     }
+    finalizeLatencies(event.audit, this.auditPoints.get(event.id))
     this.state = completeThresholdHandling(this.state, eventId, this.now())
     await this.reporter.write(this.state)
     await this.repository.save(this.state)
@@ -588,6 +618,16 @@ export class GuardController {
         const waiter = this.turnWaiters.get(key)
         if (waiter) waiter(status)
       }
+      const event = this.state.lastThresholdEvent
+      if (event?.target
+        && event.target.threadId === value.threadId
+        && event.target.turnId === value.turn?.id
+        && value.turn.status !== "inProgress") {
+        this.observeEventAudit(event.id, "turnTerminalStateObserved")
+        finalizeLatencies(event.audit, this.auditPoints.get(event.id))
+        await this.repository.save(this.state)
+        await this.reporter.write(this.state)
+      }
       const activeTurn = this.state.activeTurn
       if (activeTurn
         && activeTurn.threadId === value.threadId
@@ -622,6 +662,61 @@ export class GuardController {
       this.state.errors = this.state.errors.slice(-50)
       await this.repository.save(this.state)
     })
+  }
+
+  private initializeEventAudit(event: NonNullable<PersistedGuardState["lastThresholdEvent"]>): void {
+    const points: AuditMonotonicPoints = {}
+    this.auditPoints.set(event.id, points)
+    const quotaObservation = this.lastQuotaObservation
+    if (quotaObservation) {
+      observeAuditPoint(
+        event.audit,
+        "quotaSnapshotObserved",
+        quotaObservation.utcTimestamp,
+        quotaObservation.monotonicTimestamp,
+        points,
+      )
+    } else if (this.state.quota) {
+      event.audit.quotaSnapshotObservedAt = new Date(this.state.quota.observedAt).toISOString()
+    }
+    this.observeEventAudit(event.id, "thresholdDetected")
+    if (event.target) this.observeEventAudit(event.id, "activeTurnResolved")
+  }
+
+  private observeEventAudit(eventId: string, point: AuditPoint): void {
+    const event = this.state.lastThresholdEvent
+    if (!event || event.id !== eventId) return
+    let points = this.auditPoints.get(eventId)
+    if (!points) {
+      points = {}
+      this.auditPoints.set(eventId, points)
+    }
+    observeAuditPoint(
+      event.audit,
+      point,
+      this.auditClock.utcNow(),
+      this.auditClock.monotonicNow(),
+      points,
+    )
+  }
+
+  private async reconcileThresholdTerminalState(eventId: string): Promise<void> {
+    const event = this.state.lastThresholdEvent
+    if (!event?.target || event.id !== eventId) return
+    try {
+      const response = await this.manager.request<{
+        thread: { turns?: Array<{ id: string; status: string }> }
+      }>("thread/read", {
+        threadId: event.target.threadId,
+        includeTurns: true,
+      })
+      const targetTurn = response.thread.turns?.find((turn) => turn.id === event.target!.turnId)
+      if (targetTurn && targetTurn.status !== "inProgress") {
+        this.observeEventAudit(event.id, "turnTerminalStateObserved")
+      }
+    } catch {
+      // 缺少通知和精确对账证据时，终态时间保持 null。
+    }
   }
 
   private queueBackground(task: Promise<void>): void {

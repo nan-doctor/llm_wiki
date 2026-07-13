@@ -67,12 +67,26 @@ function renderMarkdown(state: PersistedGuardState, gitStatus: string): string {
   return `# Codex Quota Guard 本地阈值报告
 
 - 事件：${event.id}
+- 事件类型：${event.audit.eventKind}
 - 时间：${new Date(event.occurredAt).toISOString()}
 - 窗口：${event.windowKey}
 - 固定目标：${target}
 - 中断成功：${String(event.interruptSucceeded)}
 - Goal 已暂停：${String(event.goalPaused)}
 - 后台 terminal 已清理：${String(event.backgroundTerminalsCleaned)}
+- quotaSnapshotObservedAt：${event.audit.quotaSnapshotObservedAt ?? "null"}
+- thresholdDetectedAt：${event.audit.thresholdDetectedAt ?? "null"}
+- activeTurnResolvedAt：${event.audit.activeTurnResolvedAt ?? "null"}
+- interruptRequestedAt：${event.audit.interruptRequestedAt ?? "null"}
+- interruptAcknowledgedAt：${event.audit.interruptAcknowledgedAt ?? "null"}
+- turnTerminalStateObservedAt：${event.audit.turnTerminalStateObservedAt ?? "null"}
+- goalPauseRequestedAt：${event.audit.goalPauseRequestedAt ?? "null"}
+- goalPauseAcknowledgedAt：${event.audit.goalPauseAcknowledgedAt ?? "null"}
+- backgroundTerminalCleanedAt：${event.audit.backgroundTerminalCleanedAt ?? "null"}
+- snapshotToDetectionMs：${event.audit.latencies.snapshotToDetectionMs ?? "null"}
+- detectionToInterruptRequestMs：${event.audit.latencies.detectionToInterruptRequestMs ?? "null"}
+- interruptRequestToAcknowledgementMs：${event.audit.latencies.interruptRequestToAcknowledgementMs ?? "null"}
+- interruptRequestToTerminalStateMs：${event.audit.latencies.interruptRequestToTerminalStateMs ?? "null"}
 
 ## 已完成 item
 

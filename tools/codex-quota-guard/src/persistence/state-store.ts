@@ -1,6 +1,7 @@
 import { mkdir, open, readFile, rename, rm } from "node:fs/promises"
 import path from "node:path"
 import type { PersistedGuardState } from "../guard/state-machine.js"
+import { createAuditRecord } from "../audit/timing.js"
 import type { GuardStateRepository } from "./repository.js"
 
 const SENSITIVE_KEY = /(access.?token|refresh.?token|authorization|cookie|secret|api.?key)/i
@@ -31,7 +32,10 @@ export class StateStore implements GuardStateRepository {
     value.limits.requireProtection ??= false
     value.limits.requireGoalControl ??= false
     value.goalControl ??= "unavailable"
-    if (value.lastThresholdEvent) value.lastThresholdEvent.goalErrorCategory ??= null
+    if (value.lastThresholdEvent) {
+      value.lastThresholdEvent.goalErrorCategory ??= null
+      value.lastThresholdEvent.audit ??= createAuditRecord("quotaThreshold")
+    }
     value.runtime ??= {
       task: null,
       current: null,

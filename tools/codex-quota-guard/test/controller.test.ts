@@ -472,6 +472,51 @@ describe("GuardController", () => {
     await test.controller.stop()
   })
 
+  it("记录真实阈值事件的 UTC 时间和单调时延", async () => {
+    const monotonicValues = [0, 0, 100, 110, 112, 115, 125, 135, 140, 150, 160]
+    let utcIndex = 0
+    const test = setup({
+      auditClock: {
+        utcNow: () => new Date(20_000 + utcIndex++).toISOString(),
+        monotonicNow: () => monotonicValues.shift() ?? 160,
+      },
+    } as GuardControllerOptions & {
+      auditClock: { utcNow(): string; monotonicNow(): number }
+    })
+    await test.controller.start()
+    test.factory.connections[0].respond("thread/read", {
+      thread: { turns: [{ id: "turn-1", status: "inProgress" }] },
+    })
+    const started = await test.controller.run("时延审计")
+    test.factory.connections[0].respond("thread/read", {
+      thread: { turns: [{ id: started.turnId, status: "interrupted" }] },
+    })
+    test.setLimits(criticalLimits())
+
+    await test.controller.refreshAndHandleQuota()
+
+    const audit = test.controller.status().state.lastThresholdEvent?.audit
+    expect(audit).toMatchObject({
+      eventKind: "quotaThreshold",
+      quotaSnapshotObservedAt: expect.any(String),
+      thresholdDetectedAt: expect.any(String),
+      activeTurnResolvedAt: expect.any(String),
+      interruptRequestedAt: expect.any(String),
+      interruptAcknowledgedAt: expect.any(String),
+      turnTerminalStateObservedAt: expect.any(String),
+      goalPauseRequestedAt: expect.any(String),
+      goalPauseAcknowledgedAt: expect.any(String),
+      backgroundTerminalCleanedAt: expect.any(String),
+      latencies: {
+        snapshotToDetectionMs: 10,
+        detectionToInterruptRequestMs: 5,
+        interruptRequestToAcknowledgementMs: 10,
+        interruptRequestToTerminalStateMs: 20,
+      },
+    })
+    await test.controller.stop()
+  })
+
   it("weekly 98% used 但 5 小时窗口安全时不发送 interrupt", async () => {
     const test = setup()
     await test.controller.start()
@@ -529,6 +574,7 @@ describe("GuardController", () => {
     })
     expect((state as unknown as { goalControl: string }).goalControl).toBe("degraded")
     expect(state.lastThresholdEvent?.errors).toContain("no such table: thread_goals")
+    expect(state.lastThresholdEvent?.audit.goalPauseAcknowledgedAt).toBeNull()
     expect(test.factory.connections[0].requests.some((request) => (
       request.method === "thread/goal/clear"
     ))).toBe(false)

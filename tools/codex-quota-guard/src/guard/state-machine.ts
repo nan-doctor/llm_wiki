@@ -2,6 +2,7 @@ import type { ActiveTurn, ThreadGoal } from "../app-server/protocol.js"
 import type { NormalizedQuota } from "../quota/types.js"
 import type { CapabilityMatrix } from "../runtime/capabilities.js"
 import type { RuntimeChange, RuntimeIdentity } from "../runtime/types.js"
+import { createAuditRecord, type EventAudit } from "../audit/timing.js"
 
 export type GuardPhase = "ARMED" | "HANDLING" | "HANDLED" | "DORMANT" | "UNKNOWN"
 export type TurnAdmission = "ALLOWED" | "WAITING" | "BLOCKED"
@@ -24,6 +25,7 @@ export interface QuotaThresholdEvent {
   originalGoal: ThreadGoal | null
   goalPaused: boolean | null
   goalErrorCategory: GoalErrorCategory | null
+  audit: EventAudit
   errors: string[]
 }
 
@@ -206,6 +208,7 @@ export function applyQuotaObservation(
     originalGoal: null,
     goalPaused: null,
     goalErrorCategory: null,
+    audit: createAuditRecord("quotaThreshold"),
     errors: [],
   }
 
@@ -277,6 +280,7 @@ export function applyStaleQuota(
     originalGoal: null,
     goalPaused: null,
     goalErrorCategory: null,
+    audit: createAuditRecord("quotaThreshold"),
     errors: [],
   }
   state.guard.thresholdHandled = true
