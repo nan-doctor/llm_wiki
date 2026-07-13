@@ -29,6 +29,9 @@ export class StateStore implements GuardStateRepository {
       throw new Error(`不支持的状态文件版本：${String(value.schemaVersion)}`)
     }
     value.limits.requireProtection ??= false
+    value.limits.requireGoalControl ??= false
+    value.goalControl ??= "unavailable"
+    if (value.lastThresholdEvent) value.lastThresholdEvent.goalErrorCategory ??= null
     value.runtime ??= {
       task: null,
       current: null,

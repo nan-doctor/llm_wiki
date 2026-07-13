@@ -11,8 +11,14 @@ function setup() {
     async start() { calls.push("start") },
     async stop() { calls.push("stop") },
     status() { return { state, admission: "ALLOWED" } },
-    async run() { calls.push("run"); return { threadId: "thread-1", turnId: "turn-1" } },
-    async resume() { calls.push("resume"); return { threadId: "thread-1", turnId: "turn-2" } },
+    async run(_prompt, options) {
+      calls.push(`run:goal=${String(options?.requireGoalControl ?? false)}`)
+      return { threadId: "thread-1", turnId: "turn-1" }
+    },
+    async resume(_prompt, options) {
+      calls.push(`resume:goal=${String(options?.requireGoalControl ?? false)}`)
+      return { threadId: "thread-1", turnId: "turn-2" }
+    },
     async waitForTurn() { calls.push("wait"); return "completed" },
     async waitForIdle() { calls.push("idle") },
     async refreshAndHandleQuota() { calls.push("refresh") },
@@ -130,7 +136,7 @@ describe("executeCli", () => {
     const code = await executeCli(["run", "执行任务", "--json"], test.dependencies)
 
     expect(code).toBe(0)
-    expect(test.calls.filter((call) => call === "run")).toHaveLength(1)
+    expect(test.calls.filter((call) => call.startsWith("run:"))).toHaveLength(1)
     expect(test.calls).toContain("wait")
   })
 
@@ -182,5 +188,15 @@ describe("executeCli", () => {
     expect(test.calls.filter((call) => call.startsWith("resolve:"))).toEqual([
       "resolve:/路径 含空格/codex",
     ])
+  })
+
+  it("把严格 Goal 参数传给 run 和 resume", async () => {
+    const run = setup()
+    await executeCli(["run", "执行", "--require-goal-control"], run.dependencies)
+    expect(run.calls).toContain("run:goal=true")
+
+    const resume = setup()
+    await executeCli(["resume", "继续", "--require-goal-control"], resume.dependencies)
+    expect(resume.calls).toContain("resume:goal=true")
   })
 })

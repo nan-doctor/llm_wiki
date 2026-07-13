@@ -15,6 +15,7 @@ import {
   applyStaleQuota,
   completeThresholdHandling,
   createInitialState,
+  type GoalErrorCategory,
   type PersistedGuardState,
   type TurnAdmission,
 } from "./state-machine.js"
@@ -34,6 +35,11 @@ export interface RunOptions {
   maxRuntimeMs?: number
   maxTurns?: number
   requireProtection?: boolean
+  requireGoalControl?: boolean
+}
+
+export interface ResumeOptions {
+  requireGoalControl?: boolean
 }
 
 export interface StartedTurn {
@@ -129,6 +135,9 @@ export class GuardController {
     return await this.mutex.run(async () => {
       this.applyRunLimits(options)
       this.assertTurnAdmission(options.requireProtection ?? false)
+      if (options.requireGoalControl && !options.goal && !options.threadId) {
+        throw new Error("--require-goal-control 需要 --goal 或已有 thread Goal")
+      }
       const threadId = options.threadId
         ? await this.resumeThread(options.threadId)
         : await this.startThread()
@@ -141,11 +150,12 @@ export class GuardController {
           tokenBudget: options.tokenBudget,
         })
       }
+      if (options.requireGoalControl) await this.ensureGoalControl(threadId)
       return await this.startTurn(threadId, prompt)
     })
   }
 
-  async resume(prompt?: string): Promise<StartedTurn | null> {
+  async resume(prompt?: string, options: ResumeOptions = {}): Promise<StartedTurn | null> {
     await this.refreshUntilKnown()
     return await this.mutex.run(async () => {
       const event = this.state.lastThresholdEvent
@@ -153,6 +163,9 @@ export class GuardController {
         throw new Error("没有可恢复的中断记录，请改用 run")
       }
       this.assertCoreProtectionCapabilities()
+      const requireGoalControl = options.requireGoalControl === true
+        || this.state.limits.requireGoalControl
+      if (requireGoalControl) this.assertGoalSchemaCapabilities()
       this.assertTurnAdmission(this.state.limits.requireProtection)
       const threadId = await this.resumeThread(event.target.threadId)
       if (event.originalGoal) {
@@ -163,7 +176,9 @@ export class GuardController {
           tokenBudget: event.originalGoal.tokenBudget,
         })
       }
+      if (requireGoalControl) await this.ensureGoalControl(threadId)
       this.captureTaskRuntime()
+      this.state.limits.requireGoalControl = requireGoalControl
       this.state.resumableEventId = null
       await this.repository.save(this.state)
       if (prompt === undefined || prompt.trim() === "") return null
@@ -288,9 +303,13 @@ export class GuardController {
           status: "paused",
         })
         event.goalPaused = true
+        event.goalErrorCategory = null
+        this.state.goalControl = "runtimeVerified"
       }
     } catch (error) {
       event.goalPaused = false
+      event.goalErrorCategory = classifyGoalError(error)
+      this.state.goalControl = "degraded"
       event.errors.push(errorMessage(error))
     }
 
@@ -381,6 +400,7 @@ export class GuardController {
 
   private applyRunLimits(options: RunOptions): void {
     this.state.limits.requireProtection = options.requireProtection ?? false
+    this.state.limits.requireGoalControl = options.requireGoalControl ?? false
     if (options.tokenBudget !== undefined) this.state.limits.goalTokenBudget = options.tokenBudget
     if (options.maxRuntimeMs !== undefined) this.state.limits.maxRuntimeMs = options.maxRuntimeMs
     if (options.maxTurns !== undefined) this.state.limits.maxTurns = options.maxTurns
@@ -396,6 +416,11 @@ export class GuardController {
       this.runtimeContext.capabilityMatrix,
       changes.length > 0,
     )
+    const goalSchemaAvailable = this.hasGoalSchemaCapabilities()
+    if (!goalSchemaAvailable) this.state.goalControl = "unavailable"
+    else if (changes.length > 0 || this.state.goalControl === "unavailable") {
+      this.state.goalControl = "schemaDetected"
+    }
   }
 
   private captureTaskRuntime(): void {
@@ -414,6 +439,75 @@ export class GuardController {
     ]
     const missing = required.find(([key]) => !this.runtimeContext!.schemaCapabilities[key])
     if (missing) throw new Error(`核心保护能力不可用：${missing[1]}`)
+  }
+
+  private hasGoalSchemaCapabilities(): boolean {
+    if (!this.runtimeContext) return false
+    const schema = this.runtimeContext.schemaCapabilities
+    return schema.goalGet && schema.goalSet && schema.goalPaused && schema.goalResume
+  }
+
+  private assertGoalSchemaCapabilities(): void {
+    if (this.hasGoalSchemaCapabilities()) return
+    this.state.goalControl = "unavailable"
+    throw new Error("Goal 控制不可用：当前 Codex 协议缺少 Goal get、pause 或 resume 能力")
+  }
+
+  private async ensureGoalControl(threadId: string): Promise<void> {
+    this.assertGoalSchemaCapabilities()
+    let originalGoal: ThreadGoal | null = null
+    let pauseRequested = false
+    try {
+      const initial = await this.manager.request<{ goal: ThreadGoal | null }>(
+        "thread/goal/get",
+        { threadId },
+      )
+      originalGoal = initial.goal
+      if (!originalGoal) throw new Error("thread 没有可验证的 Goal")
+
+      await this.manager.request("thread/goal/set", { threadId, status: "paused" })
+      pauseRequested = true
+      const paused = await this.manager.request<{ goal: ThreadGoal | null }>(
+        "thread/goal/get",
+        { threadId },
+      )
+      if (paused.goal?.status !== "paused") throw new Error("Goal pause 未通过运行时对账")
+
+      await this.restoreGoal(threadId, originalGoal)
+      pauseRequested = false
+      const restored = await this.manager.request<{ goal: ThreadGoal | null }>(
+        "thread/goal/get",
+        { threadId },
+      )
+      if (restored.goal?.status !== originalGoal.status) {
+        throw new Error("Goal resume 未通过运行时对账")
+      }
+      this.state.goalControl = "runtimeVerified"
+      await this.repository.save(this.state)
+    } catch (error) {
+      if (pauseRequested && originalGoal) {
+        try {
+          await this.restoreGoal(threadId, originalGoal)
+        } catch (restoreError) {
+          this.state.errors.push(`Goal 恢复失败：${errorMessage(restoreError)}`)
+        }
+      }
+      const category = classifyGoalError(error)
+      this.state.goalControl = "degraded"
+      this.state.errors.push(`Goal 控制运行时验证失败 [${category}]：${errorMessage(error)}`)
+      this.state.errors = this.state.errors.slice(-50)
+      await this.repository.save(this.state)
+      throw new Error(`Goal 控制运行时验证失败 [${category}]：${errorMessage(error)}`)
+    }
+  }
+
+  private async restoreGoal(threadId: string, goal: ThreadGoal): Promise<void> {
+    await this.manager.request("thread/goal/set", {
+      threadId,
+      objective: goal.objective,
+      status: goal.status,
+      tokenBudget: goal.tokenBudget,
+    })
   }
 
   private isAwaitingBaseline(): boolean {
@@ -578,6 +672,24 @@ function isIdempotentInterruptError(error: unknown): boolean {
     || message.includes("不存在")
     || message.includes("已结束")
     || message.includes("已中断")
+}
+
+function classifyGoalError(error: unknown): GoalErrorCategory {
+  const message = errorMessage(error).toLowerCase()
+  if (message.includes("no such table")
+    || message.includes("thread_goals")
+    || message.includes("database")
+    || message.includes("数据库")) {
+    return "goal_database_unavailable"
+  }
+  if (message.includes("method not found")
+    || message.includes("unsupported")
+    || message.includes("schema")
+    || message.includes("协议缺少")
+    || message.includes("不支持")) {
+    return "goal_schema_unavailable"
+  }
+  return "goal_runtime_failed"
 }
 
 function errorMessage(error: unknown): string {

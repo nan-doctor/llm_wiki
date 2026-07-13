@@ -1,5 +1,5 @@
 import type { DoctorResult } from "./doctor.js"
-import type { RunOptions, StartedTurn } from "./guard/controller.js"
+import type { ResumeOptions, RunOptions, StartedTurn } from "./guard/controller.js"
 import type { PersistedGuardState, TurnAdmission } from "./guard/state-machine.js"
 import { parseCliArgs } from "./cli-args.js"
 import type { RuntimeContext } from "./runtime/runtime-context.js"
@@ -10,7 +10,7 @@ export interface CliController {
   stop(): Promise<void>
   status(): { state: PersistedGuardState; admission: TurnAdmission }
   run(prompt: string, options?: RunOptions): Promise<StartedTurn>
-  resume(prompt?: string): Promise<StartedTurn | null>
+  resume(prompt?: string, options?: ResumeOptions): Promise<StartedTurn | null>
   waitForTurn(started: StartedTurn, maxRuntimeMs?: number): Promise<string>
   waitForIdle(): Promise<void>
   refreshAndHandleQuota(): Promise<void>
@@ -76,10 +76,13 @@ export async function executeCli(
         maxRuntimeMs: parsed.maxRuntimeMs,
         maxTurns: parsed.maxTurns,
         requireProtection: parsed.requireProtection,
+        requireGoalControl: parsed.requireGoalControl,
       })
     } else {
       maxRuntimeMs = controller.status().state.limits.maxRuntimeMs ?? undefined
-      started = await controller.resume(parsed.prompt)
+      started = await controller.resume(parsed.prompt, {
+        requireGoalControl: parsed.requireGoalControl,
+      })
     }
 
     if (started) {
@@ -161,12 +164,13 @@ function formatHelp(): string {
   codex-quota-guard status [--json]
   codex-quota-guard run <提示> [--thread <id>] [--goal <目标>] [--token-budget <数量>]
                         [--max-runtime <时长>] [--max-turns <数量>]
-                        [--require-protection] [--json]
-  codex-quota-guard resume [提示] [--json]
+                        [--require-protection] [--require-goal-control] [--json]
+  codex-quota-guard resume [提示] [--require-goal-control] [--json]
   codex-quota-guard doctor [--live-canary] [--json]
 
 说明：
   --require-protection  仅当 5 小时保护窗口可用时允许本次 run
+  --require-goal-control  仅当 Goal pause/resume 可运行时允许启动 turn
   --live-canary         执行一次双重确认的极小真实 turn 验收
   --help, -h            显示本帮助且不启动 App Server`
 }

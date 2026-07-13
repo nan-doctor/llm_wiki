@@ -524,10 +524,72 @@ describe("GuardController", () => {
       target: started,
       interruptSucceeded: true,
       goalPaused: false,
+      goalErrorCategory: "goal_database_unavailable",
       backgroundTerminalsCleaned: true,
     })
+    expect((state as unknown as { goalControl: string }).goalControl).toBe("degraded")
     expect(state.lastThresholdEvent?.errors).toContain("no such table: thread_goals")
+    expect(test.factory.connections[0].requests.some((request) => (
+      request.method === "thread/goal/clear"
+    ))).toBe(false)
     expect(test.reporter.eventIds).toHaveLength(1)
+    await test.controller.stop()
+  })
+
+  it("严格 Goal 控制在数据库不可用时于 turn/start 前拒绝", async () => {
+    const context = runtimeContext()
+    const test = setup({ runtimeContext: context } as GuardControllerOptions & {
+      runtimeContext: RuntimeContext
+    })
+    await test.controller.start()
+    test.factory.connections[0].respond("thread/goal/get", () => {
+      throw new Error("no such table: thread_goals")
+    })
+
+    await expect(test.controller.run("严格 Goal", {
+      threadId: "thread-1",
+      goal: "完成任务",
+      requireGoalControl: true,
+    } as Parameters<typeof test.controller.run>[1] & { requireGoalControl: boolean }))
+      .rejects.toThrow("Goal 控制运行时验证失败")
+
+    const requests = test.factory.connections[0].requests
+    expect(requests.some((request) => request.method === "turn/start")).toBe(false)
+    expect((test.repository.state as unknown as { goalControl: string }).goalControl)
+      .toBe("degraded")
+    await test.controller.stop()
+  })
+
+  it("严格 Goal 控制的新 thread 没有 --goal 时在 thread/start 前拒绝", async () => {
+    const context = runtimeContext()
+    const test = setup({ runtimeContext: context } as GuardControllerOptions & {
+      runtimeContext: RuntimeContext
+    })
+    await test.controller.start()
+
+    await expect(test.controller.run("缺少 Goal", {
+      requireGoalControl: true,
+    } as Parameters<typeof test.controller.run>[1] & { requireGoalControl: boolean }))
+      .rejects.toThrow("--require-goal-control 需要 --goal 或已有 thread Goal")
+    expect(test.factory.connections[0].requests.some((request) => request.method === "thread/start"))
+      .toBe(false)
+    await test.controller.stop()
+  })
+
+  it("requireProtection 不要求 Goal 控制能力", async () => {
+    const context = runtimeContext()
+    context.schemaCapabilities.goalGet = false
+    context.schemaCapabilities.goalSet = false
+    context.schemaCapabilities.goalPaused = false
+    context.schemaCapabilities.goalResume = false
+    const test = setup({ runtimeContext: context } as GuardControllerOptions & {
+      runtimeContext: RuntimeContext
+    })
+    await test.controller.start()
+
+    await expect(test.controller.run("只要求额度保护", {
+      requireProtection: true,
+    })).resolves.toMatchObject({ threadId: "thread-1" })
     await test.controller.stop()
   })
 

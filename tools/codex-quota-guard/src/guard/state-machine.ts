@@ -5,6 +5,11 @@ import type { RuntimeChange, RuntimeIdentity } from "../runtime/types.js"
 
 export type GuardPhase = "ARMED" | "HANDLING" | "HANDLED" | "DORMANT" | "UNKNOWN"
 export type TurnAdmission = "ALLOWED" | "WAITING" | "BLOCKED"
+export type GoalControlStatus = "runtimeVerified" | "schemaDetected" | "degraded" | "unavailable"
+export type GoalErrorCategory =
+  | "goal_database_unavailable"
+  | "goal_schema_unavailable"
+  | "goal_runtime_failed"
 
 export interface QuotaThresholdEvent {
   id: string
@@ -18,6 +23,7 @@ export interface QuotaThresholdEvent {
   backgroundTerminalsCleaned: boolean | null
   originalGoal: ThreadGoal | null
   goalPaused: boolean | null
+  goalErrorCategory: GoalErrorCategory | null
   errors: string[]
 }
 
@@ -36,12 +42,14 @@ export interface PersistedGuardState {
   activeTurn: ActiveTurn | null
   lastThresholdEvent: QuotaThresholdEvent | null
   resumableEventId: string | null
+  goalControl: GoalControlStatus
   limits: {
     goalTokenBudget: number | null
     maxRuntimeMs: number | null
     maxTurns: number | null
     turnsStarted: number
     requireProtection: boolean
+    requireGoalControl: boolean
   }
   runtime: {
     task: RuntimeIdentity | null
@@ -73,12 +81,14 @@ export function createInitialState(): PersistedGuardState {
     activeTurn: null,
     lastThresholdEvent: null,
     resumableEventId: null,
+    goalControl: "unavailable",
     limits: {
       goalTokenBudget: null,
       maxRuntimeMs: null,
       maxTurns: null,
       turnsStarted: 0,
       requireProtection: false,
+      requireGoalControl: false,
     },
     runtime: {
       task: null,
@@ -195,6 +205,7 @@ export function applyQuotaObservation(
     backgroundTerminalsCleaned: null,
     originalGoal: null,
     goalPaused: null,
+    goalErrorCategory: null,
     errors: [],
   }
 
@@ -265,6 +276,7 @@ export function applyStaleQuota(
     backgroundTerminalsCleaned: null,
     originalGoal: null,
     goalPaused: null,
+    goalErrorCategory: null,
     errors: [],
   }
   state.guard.thresholdHandled = true
