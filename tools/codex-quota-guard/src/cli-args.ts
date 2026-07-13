@@ -6,6 +6,12 @@ export type ParsedCliArgs =
       requireProtection: boolean
       tuiArgs: string[]
     }
+  | { command: "config"; operation: "show"; json: boolean }
+  | {
+      command: "config"
+      operation: "set-default-require-protection"
+      value: boolean
+    }
   | { command: "status"; json: boolean; codexPath: string | undefined }
   | {
       command: "doctor"
@@ -48,6 +54,30 @@ export function parseCliArgs(args: string[]): ParsedCliArgs {
       json: parsed.flags.has("json"),
       codexPath: parsed.values.get("codex-path"),
     }
+  }
+  if (command === "config") {
+    const [operation, ...configArgs] = rest
+    if (operation === "show") {
+      const parsed = parseOptions(configArgs, new Set(["json"]))
+      if (parsed.positionals.length > 0) throw new Error("config show 不接受位置参数")
+      return { command, operation, json: parsed.flags.has("json") }
+    }
+    if (operation === "set") {
+      const [key, value, ...extra] = configArgs
+      if (key !== "default-require-protection") {
+        throw new Error(`config set 不支持键：${key ?? "(空)"}`)
+      }
+      if (value !== "true" && value !== "false") {
+        throw new Error("default-require-protection 只接受 true 或 false")
+      }
+      if (extra.length > 0) throw new Error("config set 参数过多")
+      return {
+        command,
+        operation: "set-default-require-protection",
+        value: value === "true",
+      }
+    }
+    throw new Error(`config 未知操作：${operation ?? "(空)"}`)
   }
   if (command === "interactive") {
     const separator = rest.indexOf("--")

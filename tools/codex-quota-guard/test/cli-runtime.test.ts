@@ -3,6 +3,10 @@ import { buildCapabilityMatrix, type ProtocolCapabilities } from "../src/doctor.
 import { createInitialState } from "../src/guard/state-machine.js"
 import { executeCli, type CliController, type CliDependencies } from "../src/cli-runtime.js"
 import type { RuntimeContext } from "../src/runtime/runtime-context.js"
+import {
+  defaultGlobalGuardConfig,
+  type GlobalGuardConfig,
+} from "../src/persistence/global-config-store.js"
 
 function setup() {
   const calls: string[] = []
@@ -64,6 +68,7 @@ function setup() {
     },
     async stop(reason: string) { calls.push(`interactive:stop:${reason}`) },
   }
+  let globalConfig = defaultGlobalGuardConfig()
   const dependencies: CliDependencies = {
     rootDirectory: "/tmp/fake-root",
     resolveRuntimeContext: async (codexPath) => {
@@ -81,6 +86,16 @@ function setup() {
       return interactiveSession
     },
     platform: "darwin",
+    globalConfigStore: {
+      load: async () => structuredClone(globalConfig),
+      update: async (mutator) => {
+        const next = structuredClone(globalConfig)
+        mutator(next)
+        globalConfig = next
+        return structuredClone(globalConfig)
+      },
+    },
+    loadProjectConfig: async () => ({ codexPath: "./project-codex" }),
     acquireLock: async () => ({ release: async () => { calls.push("release") } }),
     liveCanaryConsent: false,
     runDoctor: async (context, liveCanary = false) => {
@@ -120,6 +135,7 @@ function setup() {
     state,
     runtimeContext,
     interactiveSession,
+    setGlobalConfig(value: GlobalGuardConfig) { globalConfig = structuredClone(value) },
   }
 }
 
@@ -177,6 +193,53 @@ describe("executeCli", () => {
 
     expect(test.calls).toContain("failed-session:stop:cli-finally")
     expect(test.calls).toContain("release")
+  })
+
+  it("config show 合并全局和项目配置且不启动运行时", async () => {
+    const test = setup()
+
+    expect(await executeCli(["config", "show", "--json"], test.dependencies)).toBe(0)
+
+    expect(test.calls).toEqual([])
+    expect(JSON.parse(test.output[0])).toEqual({
+      global: defaultGlobalGuardConfig(),
+      project: {
+        codexPath: "./project-codex",
+        source: "project .codex-guard/config.json",
+      },
+    })
+  })
+
+  it("config set 只更新默认严格保护且不取得锁", async () => {
+    const test = setup()
+
+    expect(await executeCli([
+      "config",
+      "set",
+      "default-require-protection",
+      "true",
+    ], test.dependencies)).toBe(0)
+    expect(test.calls).toEqual([])
+    expect(test.output.at(-1)).toContain("defaultRequireProtection=true")
+
+    const interactive = await executeCli(["interactive"], test.dependencies)
+    expect(interactive).toBe(7)
+    expect(test.calls).toContain(
+      "interactive:run:{\"tuiArgs\":[],\"requireProtection\":true}",
+    )
+  })
+
+  it("显式严格 flag 在全局默认 false 时仍传给 interactive", async () => {
+    const test = setup()
+    const config = defaultGlobalGuardConfig()
+    config.defaultRequireProtection = false
+    test.setGlobalConfig(config)
+
+    await executeCli(["interactive", "--require-protection"], test.dependencies)
+
+    expect(test.calls).toContain(
+      "interactive:run:{\"tuiArgs\":[],\"requireProtection\":true}",
+    )
   })
 
   it.each([

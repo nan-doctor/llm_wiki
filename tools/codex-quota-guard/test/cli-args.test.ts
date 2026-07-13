@@ -60,6 +60,38 @@ describe("parseCliArgs", () => {
       .toThrow("任务提示请在 TUI 内输入")
   })
 
+  it("解析 config show 与唯一允许的 set 键", () => {
+    expect(parseCliArgs(["config", "show"])).toEqual({
+      command: "config",
+      operation: "show",
+      json: false,
+    })
+    expect(parseCliArgs(["config", "show", "--json"])).toEqual({
+      command: "config",
+      operation: "show",
+      json: true,
+    })
+    expect(parseCliArgs([
+      "config",
+      "set",
+      "default-require-protection",
+      "true",
+    ])).toEqual({
+      command: "config",
+      operation: "set-default-require-protection",
+      value: true,
+    })
+  })
+
+  it.each([
+    ["config", "set", "default-interactive-protection", "false"],
+    ["config", "set", "default-require-protection", "yes"],
+    ["config", "set", "unknown", "true"],
+    ["config", "show", "extra"],
+  ])("拒绝不受支持的 config 参数：%s", (...args) => {
+    expect(() => parseCliArgs(args)).toThrow()
+  })
+
   it("解析 run 的单轮参数", () => {
     expect(parseCliArgs([
       "run",

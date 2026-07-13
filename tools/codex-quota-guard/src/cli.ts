@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { randomBytes, randomUUID } from "node:crypto"
+import os from "node:os"
 import { AppServerManager } from "./app-server/manager.js"
 import { ProcessAppServerConnection } from "./app-server/process-connection.js"
 import { executeCli, type CliDependencies } from "./cli-runtime.js"
@@ -9,6 +10,8 @@ import { runInteractivePreflight } from "./interactive/preflight.js"
 import { InteractiveSession } from "./interactive/session.js"
 import { TuiProcess } from "./interactive/tui-process.js"
 import { ProcessLock } from "./persistence/process-lock.js"
+import { ConfigStore } from "./persistence/config-store.js"
+import { GlobalConfigStore } from "./persistence/global-config-store.js"
 import { StateStore } from "./persistence/state-store.js"
 import { InteractiveAppServerClient } from "./proxy/interactive-app-server-client.js"
 import { LocalTuiEndpoint } from "./proxy/local-tui-endpoint.js"
@@ -18,6 +21,11 @@ import { LocalThresholdReporter } from "./report/local-reporter.js"
 import { createRuntimeContext } from "./runtime/runtime-context.js"
 
 const rootDirectory = process.cwd()
+const globalConfigStore = new GlobalConfigStore({
+  platform: process.platform,
+  home: process.env.HOME ?? process.env.USERPROFILE ?? os.homedir(),
+  localAppData: process.env.LOCALAPPDATA,
+})
 
 const dependencies: CliDependencies = {
   rootDirectory,
@@ -107,6 +115,8 @@ const dependencies: CliDependencies = {
     })
   },
   platform: process.platform,
+  globalConfigStore,
+  loadProjectConfig: async () => await new ConfigStore(rootDirectory).load(),
   acquireLock: async () => await ProcessLock.acquire(rootDirectory),
   liveCanaryConsent: process.env.CODEX_QUOTA_GUARD_LIVE_CANARY === "I_ACCEPT_MODEL_USAGE",
   runDoctor: async (context, liveCanary) => await runDoctor(context, { liveCanary }),

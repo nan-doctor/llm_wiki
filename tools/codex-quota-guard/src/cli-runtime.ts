@@ -5,6 +5,11 @@ import { parseCliArgs } from "./cli-args.js"
 import { sanitizeDiagnostic } from "./persistence/state-store.js"
 import type { RuntimeContext } from "./runtime/runtime-context.js"
 import type { InteractiveRunOptions } from "./interactive/session.js"
+import type { GuardConfig } from "./persistence/config-store.js"
+import type {
+  GlobalConfigStore,
+  GlobalGuardConfig,
+} from "./persistence/global-config-store.js"
 import { buildStatusOutput, formatStatusText } from "./ui/status.js"
 
 export interface CliController {
@@ -27,6 +32,8 @@ export interface CliDependencies {
     stop(reason: string): Promise<void>
   }
   platform: NodeJS.Platform
+  globalConfigStore: Pick<GlobalConfigStore, "load" | "update">
+  loadProjectConfig(): Promise<GuardConfig | null>
   acquireLock(): Promise<{ release(): Promise<void> }>
   liveCanaryConsent: boolean
   runDoctor(context: RuntimeContext, liveCanary: boolean): Promise<DoctorResult>
@@ -40,6 +47,34 @@ export async function executeCli(
   const parsed = parseCliArgs(args)
   if (parsed.command === "help") {
     dependencies.writeOutput(formatHelp())
+    return 0
+  }
+  if (parsed.command === "config") {
+    if (parsed.operation === "show") {
+      const [global, project] = await Promise.all([
+        dependencies.globalConfigStore.load(),
+        dependencies.loadProjectConfig(),
+      ])
+      const output = {
+        global,
+        project: {
+          codexPath: project?.codexPath ?? null,
+          source: project
+            ? "project .codex-guard/config.json"
+            : "project default",
+        },
+      }
+      dependencies.writeOutput(parsed.json
+        ? JSON.stringify(output, null, 2)
+        : formatConfig(output.global, output.project))
+      return 0
+    }
+    const updated = await dependencies.globalConfigStore.update((config) => {
+      config.defaultRequireProtection = parsed.value
+    })
+    dependencies.writeOutput(
+      `defaultRequireProtection=${String(updated.defaultRequireProtection)}`,
+    )
     return 0
   }
   if (parsed.command === "doctor") {
@@ -61,6 +96,7 @@ export async function executeCli(
   }
 
   if (parsed.command === "interactive") {
+    const global = await dependencies.globalConfigStore.load()
     const context = await dependencies.resolveRuntimeContext(parsed.codexPath)
     assertLaunchAllowed(context)
     assertInteractiveCapabilities(context, dependencies.platform)
@@ -80,7 +116,7 @@ export async function executeCli(
     try {
       return await session.run({
         tuiArgs: parsed.tuiArgs,
-        requireProtection: parsed.requireProtection,
+        requireProtection: parsed.requireProtection || global.defaultRequireProtection,
       })
     } catch (error) {
       throw contextualRuntimeError(error, context)
@@ -161,6 +197,21 @@ export async function executeCli(
     await controller.stop()
     await lock.release()
   }
+}
+
+function formatConfig(
+  global: GlobalGuardConfig,
+  project: { codexPath: string | null; source: string },
+): string {
+  return [
+    `defaultInteractiveProtection=${String(global.defaultInteractiveProtection)}`,
+    `defaultRequireProtection=${String(global.defaultRequireProtection)}`,
+    `realCodexExecutable=${global.realCodexExecutable ?? "null"}`,
+    `realCodexVersion=${global.realCodexVersion ?? "null"}`,
+    `shellIntegration.enabled=${String(global.shellIntegration.enabled)}`,
+    `project.codexPath=${project.codexPath ?? "null"}`,
+    `project.source=${project.source}`,
+  ].join("\n")
 }
 
 function contextualRuntimeError(
@@ -301,6 +352,8 @@ function formatHelp(): string {
   return `Codex Quota Guard
 
 用法：
+  codex-quota-guard config show [--json]
+  codex-quota-guard config set default-require-protection true|false
   codex-quota-guard interactive [--require-protection] [--codex-path <绝对路径>]
                                 [-- <原生 TUI 参数>]
   codex-quota-guard status [--json]
