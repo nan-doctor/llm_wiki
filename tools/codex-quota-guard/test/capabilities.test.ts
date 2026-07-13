@@ -111,6 +111,21 @@ describe("协议能力", () => {
 
     expect(await fingerprintProtocol(second)).toBe(await fingerprintProtocol(first))
   })
+
+  it("聚合 schema 仅对象键顺序变化时指纹保持稳定", async () => {
+    const first = await temporaryRoot()
+    const second = await temporaryRoot()
+    await writeFile(
+      path.join(first, "codex_app_server_protocol.v2.schemas.json"),
+      JSON.stringify({ methods: { read: { id: 1, params: { a: true, b: false } } }, version: 2 }),
+    )
+    await writeFile(
+      path.join(second, "codex_app_server_protocol.v2.schemas.json"),
+      JSON.stringify({ version: 2, methods: { read: { params: { b: false, a: true }, id: 1 } } }),
+    )
+
+    expect(await fingerprintProtocol(second)).toBe(await fingerprintProtocol(first))
+  })
 })
 
 describe("能力证据分级", () => {

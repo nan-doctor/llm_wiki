@@ -72,7 +72,7 @@ export async function inspectGeneratedProtocol(
 export async function fingerprintProtocol(directory: string): Promise<string> {
   const aggregate = path.join(directory, "codex_app_server_protocol.v2.schemas.json")
   try {
-    return sha256(await readFile(aggregate))
+    return sha256(Buffer.from(canonicalJson(await readFile(aggregate, "utf8"))))
   } catch (error) {
     if (!isNodeError(error) || error.code !== "ENOENT") throw error
   }
@@ -83,7 +83,9 @@ export async function fingerprintProtocol(directory: string): Promise<string> {
     const relative = path.relative(directory, file).split(path.sep).join("/")
     hash.update(relative)
     hash.update("\0")
-    hash.update(await readFile(file))
+    hash.update(file.endsWith(".json")
+      ? canonicalJson(await readFile(file, "utf8"))
+      : await readFile(file))
     hash.update("\0")
   }
   return hash.digest("hex")
@@ -204,6 +206,20 @@ async function listProtocolFiles(directory: string): Promise<string[]> {
 
 function sha256(content: Buffer): string {
   return createHash("sha256").update(content).digest("hex")
+}
+
+function canonicalJson(content: string): string {
+  return JSON.stringify(sortObjectKeys(JSON.parse(content) as unknown))
+}
+
+function sortObjectKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortObjectKeys)
+  if (!value || typeof value !== "object") return value
+  const record = value as Record<string, unknown>
+  return Object.fromEntries(Object.keys(record).sort().map((key) => [
+    key,
+    sortObjectKeys(record[key]),
+  ]))
 }
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
