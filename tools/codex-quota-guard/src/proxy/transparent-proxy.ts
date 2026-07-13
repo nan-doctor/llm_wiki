@@ -35,6 +35,7 @@ export class TransparentJsonRpcProxy extends EventEmitter {
   private tuiRequestCounter = 0
   private guardRequestCounter = 0
   private turnGateOpen = false
+  private downstreamPaused = false
   private started = false
 
   constructor(
@@ -48,6 +49,7 @@ export class TransparentJsonRpcProxy extends EventEmitter {
   start(): void {
     if (this.started) return
     this.started = true
+    this.downstreamPaused = false
     this.downstream.on("message", this.onDownstreamMessage)
     this.upstream.on("message", this.onUpstreamMessage)
     this.downstream.on("close", this.onDownstreamClose)
@@ -100,6 +102,11 @@ export class TransparentJsonRpcProxy extends EventEmitter {
     return promise
   }
 
+  pauseDownstream(): void {
+    this.downstreamPaused = true
+    this.turnQueue.splice(0)
+  }
+
   openTurnGate(): void {
     if (this.turnGateOpen) return
     this.turnGateOpen = true
@@ -107,6 +114,7 @@ export class TransparentJsonRpcProxy extends EventEmitter {
   }
 
   private readonly onDownstreamMessage = (message: JsonRpcMessage): void => {
+    if (this.downstreamPaused) return
     if (hasMethod(message)) {
       this.emitObservation(hasId(message) ? "tuiRequest" : "tuiNotification", message)
     } else {
@@ -118,11 +126,11 @@ export class TransparentJsonRpcProxy extends EventEmitter {
   private readonly onUpstreamMessage = (message: JsonRpcMessage): void => {
     if (hasMethod(message)) {
       this.emitObservation(hasId(message) ? "serverRequest" : "notification", message)
-      this.downstream.send(message)
+      if (!this.downstreamPaused) this.downstream.send(message)
       return
     }
     if (!hasId(message) || typeof message.id !== "string") {
-      this.downstream.send(message)
+      if (!this.downstreamPaused) this.downstream.send(message)
       return
     }
 
@@ -141,12 +149,12 @@ export class TransparentJsonRpcProxy extends EventEmitter {
     const mapping = this.tuiRequests.get(message.id)
     if (mapping) {
       this.tuiRequests.delete(message.id)
-      this.downstream.send(withId(message, mapping.originalId))
+      if (!this.downstreamPaused) this.downstream.send(withId(message, mapping.originalId))
       return
     }
 
     if (this.isOwnedId(message.id)) return
-    this.downstream.send(message)
+    if (!this.downstreamPaused) this.downstream.send(message)
   }
 
   private readonly onDownstreamClose = (): void => {

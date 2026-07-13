@@ -162,4 +162,22 @@ describe("TransparentJsonRpcProxy", () => {
     test.downstream.emitMessage({ method: "after/stop" })
     expect(test.upstream.sent).toHaveLength(sentCount)
   })
+
+  it("暂停 TUI 上行后仍允许 Guard 完成精确清理请求", async () => {
+    const test = setup()
+
+    test.proxy.pauseDownstream()
+    test.downstream.emitMessage({ id: 1, method: "turn/start" })
+    expect(test.upstream.sent).toHaveLength(0)
+
+    const interrupt = test.proxy.request("turn/interrupt", {
+      threadId: "thread-1",
+      turnId: "turn-1",
+    })
+    const request = test.upstream.sent.at(-1)!
+    test.upstream.emitMessage({ id: request.id, result: {} })
+
+    await expect(interrupt).resolves.toEqual({})
+    test.proxy.stop()
+  })
 })
