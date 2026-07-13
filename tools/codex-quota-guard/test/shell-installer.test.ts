@@ -260,6 +260,39 @@ describe("ShellInstaller", () => {
       .rejects.toMatchObject({ code: "ENOENT" })
   })
 
+  it("安装前 profile 不存在时卸载后恢复为不存在", async () => {
+    const test = await harness()
+    await rm(test.profilePath)
+
+    await test.installer.install(context(test.codexPath))
+    test.setConfirmation("UNINSTALL")
+    await test.installer.uninstall()
+
+    await expect(stat(test.profilePath)).rejects.toMatchObject({ code: "ENOENT" })
+  })
+
+  it("原 profile 为空或安装后新增用户内容时卸载不误删", async () => {
+    const empty = await harness()
+    await writeFile(empty.profilePath, "", "utf8")
+    await empty.installer.install(context(empty.codexPath))
+    empty.setConfirmation("UNINSTALL")
+    await empty.installer.uninstall()
+    expect(await readFile(empty.profilePath, "utf8")).toBe("")
+
+    const extended = await harness()
+    await rm(extended.profilePath)
+    await extended.installer.install(context(extended.codexPath))
+    await writeFile(
+      extended.profilePath,
+      `${await readFile(extended.profilePath, "utf8")}export USER_AFTER_INSTALL=1\n`,
+      "utf8",
+    )
+    extended.setConfirmation("UNINSTALL")
+    await extended.installer.uninstall()
+    expect(await readFile(extended.profilePath, "utf8"))
+      .toBe("export USER_AFTER_INSTALL=1\n")
+  })
+
   it("status 只读检查 profile、shim、保存身份和 PATH 顺序", async () => {
     const test = await harness()
     await test.installer.install(context(test.codexPath))

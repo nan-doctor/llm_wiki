@@ -13,7 +13,11 @@ export interface GlobalGuardConfig {
     enabled: boolean
     shimDirectory: string | null
     installedAt: string | null
-    shells: Array<{ shell: SupportedShell; profilePath: string }>
+    shells: Array<{
+      shell: SupportedShell
+      profilePath: string
+      profileOriginallyExisted?: boolean
+    }>
   }
 }
 
@@ -124,11 +128,18 @@ function normalizeConfig(value: unknown): GlobalGuardConfig {
 function normalizeShell(value: unknown): Array<{
   shell: SupportedShell
   profilePath: string
+  profileOriginallyExisted?: boolean
 }> {
   if (!isRecord(value)
     || (value.shell !== "zsh" && value.shell !== "bash" && value.shell !== "powershell")
     || typeof value.profilePath !== "string") return []
-  return [{ shell: value.shell, profilePath: value.profilePath }]
+  return [{
+    shell: value.shell,
+    profilePath: value.profilePath,
+    ...(typeof value.profileOriginallyExisted === "boolean"
+      ? { profileOriginallyExisted: value.profileOriginallyExisted }
+      : {}),
+  }]
 }
 
 function nullableString(value: unknown): string | null {

@@ -249,7 +249,12 @@ export class ShellInstaller {
       next.shellIntegration.enabled = true
       next.shellIntegration.shimDirectory = shimDirectory
       next.shellIntegration.installedAt ??= new Date().toISOString()
-      if (!registered) next.shellIntegration.shells.push(current)
+      if (!registered) {
+        next.shellIntegration.shells.push({
+          ...current,
+          profileOriginallyExisted: profileSnapshot.exists,
+        })
+      }
       await this.options.globalStore.save(next)
 
       await this.options.verifyInstallation({
@@ -315,12 +320,24 @@ export class ShellInstaller {
     }
 
     const configSnapshot = await captureFile(this.options.globalStore.configPath)
+    const restoredProfile = removeProfileBlock(
+      profileContent,
+      current.shell,
+      shimDirectory,
+    )
+    const profileOriginallyExisted = config.shellIntegration
+      .shells[registeredIndex]
+      ?.profileOriginallyExisted
     try {
-      await atomicWriteFile(
-        current.profilePath,
-        removeProfileBlock(profileContent, current.shell, shimDirectory),
-        profileSnapshot.mode ?? 0o600,
-      )
+      if (profileOriginallyExisted === false && restoredProfile.length === 0) {
+        await rm(current.profilePath)
+      } else {
+        await atomicWriteFile(
+          current.profilePath,
+          restoredProfile,
+          profileSnapshot.mode ?? 0o600,
+        )
+      }
       if (lastShell) {
         await Promise.all(shimPaths.map(async (shimPath) => await rm(shimPath)))
         await rmdir(shimDirectory)
