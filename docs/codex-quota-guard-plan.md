@@ -2808,7 +2808,7 @@ git commit -m "docs: 准备 Codex Quota Guard 0.3.0 默认终端集成"
 
 - 修改：`docs/codex-quota-guard-plan.md`，只追加实际命令、退出码、测试数量、资源检查和 CI 链接
 
-- [ ] **步骤 1：执行干净依赖安装和全部自动质量门**
+- [x] **步骤 1：执行干净依赖安装和全部自动质量门**
 
 运行：
 
@@ -2824,7 +2824,7 @@ npm pack --dry-run --cache /private/tmp/codex-quota-guard-npm-cache
 
 预期：全部退出码 0；测试数不少于原有 130 项加本计划新增用例；测试日志没有真实 Codex、真实账户或真实 `turn/start`。
 
-- [ ] **步骤 2：生成 tgz 并安装到隔离 prefix**
+- [x] **步骤 2：生成 tgz 并安装到隔离 prefix**
 
 运行：
 
@@ -2835,7 +2835,7 @@ npm install --prefix /private/tmp/codex-quota-guard-0.3-prefix /private/tmp/code
 
 预期：仓库外可执行入口出现；安装过程不创建 `codex`、`codex-raw`、profile 块或全局 Guard 配置。
 
-- [ ] **步骤 3：在临时 HOME 和临时 PATH 中交互验证当前 zsh 安装**
+- [x] **步骤 3：在临时 HOME 和临时 PATH 中交互验证当前 zsh 安装**
 
 创建空 `/private/tmp/codex-quota-guard-shell-home`，记录 `.zshrc`、`.bash_profile` 和真实 Codex 文件哈希。进入以该 HOME 启动的真实 zsh TTY，运行：
 
@@ -2856,7 +2856,7 @@ codex-raw --version
 
 预期：只创建临时 HOME 的 `.zshrc` 标记块、全局 Guard 配置与两个 shim；`.bash_profile` 未变化；`codex` 解析到 shim；wrapper 版本、保存路径和原始版本正确；没有 App Server 或模型 turn。
 
-- [ ] **步骤 4：验证 BYPASS、管理命令和未知命令**
+- [x] **步骤 4：验证 BYPASS、管理命令和未知命令**
 
 在同一临时 zsh TTY 运行：
 
@@ -2870,7 +2870,7 @@ codex future-command
 
 预期：前三项执行保存的真实绝对路径；BYPASS 不改变随后 `codex` 路由；`exec` 明确拒绝；未知命令等待明确选择，输入 `cancel` 后不执行真实 Codex。机器输出 stdout 未被旁路警告污染。
 
-- [ ] **步骤 5：验证卸载幂等和零残留**
+- [x] **步骤 5：验证卸载幂等和零残留**
 
 运行 `codex-quota-guard shell uninstall`，查看清单后输入 `UNINSTALL`，重开临时 zsh 并检查：
 
@@ -2883,7 +2883,7 @@ test ! -e ~/.local/share/codex-quota-guard/shims/codex-raw
 
 再执行一次 uninstall，预期返回“已卸载”。`.zshrc` 恢复原内容或原不存在状态；真实 Codex 哈希不变；无 shim、完整或残缺标记块、监听端口、token 文件或后台子进程。
 
-- [ ] **步骤 6：执行真实 Codex 无模型 remote TUI 验收**
+- [x] **步骤 6：执行真实 Codex 无模型 remote TUI 验收**
 
 该步骤允许使用真实登录态，但不输入任何提示、不执行 slash command、不启动 turn。若配置文件存在则记录 SHA-256；不存在则记录 `ABSENT` 哨兵。再记录本会话前的 App Server PID 集合：
 
@@ -2900,7 +2900,7 @@ codex-quota-guard interactive --codex-path "/Applications/ChatGPT.app/Contents/R
 
 只确认原生 TUI 首屏出现，立即按 Ctrl-C 退出。再次比较 `~/.codex/config.toml` 哈希和 App Server PID 集合，确认没有 Guard loopback 监听、token 文件或后台子进程。不得自动输入 prompt，不得执行真实 interrupt、Goal 或 live canary；如需任何真实 turn，必须另行取得用户明确许可。
 
-- [ ] **步骤 7：执行范围、敏感信息和协议完成度审计**
+- [x] **步骤 7：执行范围、敏感信息和协议完成度审计**
 
 运行：
 
@@ -2980,6 +2980,44 @@ git commit -m "docs: 记录默认 Codex 终端启动器验收结果"
 25. 全部旧测试：每个任务聚焦回归，任务十三、十四运行全量。
 26. 三平台 CI：任务十三、十四。
 
-## 实施停止点
+## 计划阶段停止点（历史记录）
 
-本计划写入并通过自审后即停止。本轮不安装依赖、不创建上述源码或测试、不修改 shell、不打开 TUI，也不执行真实或 fake turn。后续只有在用户明确选择执行方式后，才从任务一的失败测试开始实施。
+本计划最初写入并通过自审时在此停止，没有开始实现。用户随后明确批准设计并选择在当前会话执行计划，实施与验收结果记录如下。
+
+## 默认终端启动器实际验收记录（2026-07-13，macOS）
+
+### 本地质量门与发布包
+
+- 验收代码 HEAD：`bd466e3aa1e8d739f9790a9125e5bae0fcea0862`。
+- `npm ci --ignore-scripts --cache /private/tmp/codex-quota-guard-npm-cache`：退出码 0，安装 50 个包，漏洞数 0。
+- `npm test`：退出码 0，29 个测试文件、302 项测试全部通过；全部自动测试使用 fake transport/fake Codex，没有真实模型 turn。
+- `npm run typecheck`、`npm run format:check`、`npm run build`、`npm ls --depth=0`、`npm pack --dry-run`、`git diff --check`：退出码均为 0。
+- 发布包：`/private/tmp/cqg-0.3-release-pack-20260713/codex-quota-guard-0.3.0.tgz`；SHA-256 为 `3c08a8ee0f7c958981533afe0c333244eaf8161f2ae4f7ffcb6e3858ebacdf32`；47 个发布文件，只含构建产物、README、CHANGELOG、发布清单、包元数据与 `ws` 运行时依赖声明。
+- tarball 隔离安装：`/private/tmp/cqg-0.3-release-prefix-20260713`；npm 安装只创建 `codex-quota-guard` 包入口，没有自动创建 `codex`、`codex-raw`、profile 块或 Guard 全局配置。
+
+### 最终 tarball 的临时 zsh 验收
+
+- 临时 HOME：`/private/tmp/cqg-shell-release-home-20260713`；安装前 `.zshrc` 与 `.bash_profile` 均不存在。
+- `shell install` 在真实 zsh TTY 中列出影响文件，精确输入 `INSTALL` 后退出码 0；`shell status --json` 返回 `already-installed`、`healthy: true`、`issues: []`。
+- `command -v codex` 与 `command -v codex-raw` 均解析到临时 HOME 的受管 shim；wrapper 为 `0.3.0`，保存路径为 `/Applications/ChatGPT.app/Contents/Resources/codex`，保存和实测版本均为 `codex-cli 0.144.0-alpha.4`；`codex-raw --version` 原样返回真实版本。
+- `codex raw --version`、单次 `CODEX_QUOTA_GUARD_BYPASS=1`、管理命令、`exec` 拒绝和未知命令 `cancel` 已在同类 tarball TTY 验收；自动路由回归由 `shell-router.test.ts`、`cli-runtime.test.ts` 和 `shell-installer.test.ts` 直接覆盖。
+- `shell uninstall` 精确输入 `UNINSTALL` 后退出码 0；重复 status/uninstall 为 `already-uninstalled`；`.zshrc`、`.bash_profile`、两个 shim 和标记块均不存在。禁用状态的 Guard 配置不含真实路径或认证材料。
+- 实机验收曾发现“原本不存在的 profile 被恢复成空文件”，已用 `profileOriginallyExisted` 持久事实修复；测试同时证明原有空 profile 与安装后新增的用户内容不会被误删。
+- 真实 Codex 二进制安装前后 SHA-256 均为 `fba7b05624324ce44777b174fe6da1bcf08ef8cba634d85ecfaacbd8fa49aa8d`。临时 HOME 下的 `.codex` 目录是同一真实 Codex 在版本/schema 探测时生成的自身运行状态，不是 Guard shim、token 或真实用户配置改动。
+
+### 真实 Codex 无模型 TUI 验收
+
+- 最终命令来自发布 tarball，并在 `/private/tmp/cqg-real-tui-release-work-20260713` 的真实 PTY 中运行；只附加原生 `--no-alt-screen` 便于验收，没有输入 prompt 或 slash command。
+- 当前 Codex 明确报错说明 `--remote-auth-token-env` 只允许与 `wss://` 或 loopback `ws://` 组合。为保留随机 token 认证，最终实现统一改为只监听 `127.0.0.1` 随机端口；未通过取消 token 退化到 Unix socket。
+- 原生 TUI 首屏保持运行超过 10 秒；单次 `Ctrl-C` 后约 1.57 秒自然退出，最终命令退出码 0。回归测试把断线宽限固定为 3 秒，并覆盖 1.5 秒的正常原生进程收尾。
+- 最终状态读取自 `rateLimitsByLimitId.codex`：weekly `67% used`、`33% left`，没有 300 分钟窗口；`guard: DORMANT`、`turnsStarted: 0`、`activeTurn: null`、`errors: []`。weekly 仅显示，未调用 `turn/interrupt`，也没有真实模型调用。
+- TUI 下游断开时代理先暂停下游并保留唯一上游，控制器完成 `thread/backgroundTerminals/clean` 后再关闭代理；fake E2E transcript 和真实状态 `errors: []` 共同验证该清理顺序。
+- `~/.codex/config.toml` 验收前后 SHA-256 均为 `06d95d3ce4326c3d24422d9c2610c82506a024bbfae767865fa8dd25e91d8ca4`。
+- 验收前后均无 `codex app-server` 残留 PID、无 Node loopback 监听、无 `cqg-??????` 临时目录，也没有 token 文件。随机 token 未进入命令行、状态、报告、配置、上游环境或公开 transcript。
+
+### 范围、安全与 CI 状态
+
+- `git diff 1167217..HEAD --name-only` 仅包含 `tools/codex-quota-guard/**`、专属 `.github/workflows/codex-quota-guard.yml`、本计划和已获确认的同主题设计文档；没有业务源码、根 package、根 TypeScript/Vitest 配置或无关文档改动。
+- 敏感词审计命中仅为脱敏规则、fake transport 和测试假值；没有真实 token、cookie 或认证头。
+- 300 分钟唯一保护窗口、2% 下降沿、同 key 一次、HANDLED 后放行、weekly 永不触发、DORMANT + ALLOWED、重复 updated、固定 active turn、App Server 崩溃、持久状态、Goal 降级、loopback token、双向 server request、审批、未知字段、路由和清理均有直接单元或 fake E2E 证据。
+- CI 入口：[用户 fork 的 Codex Quota Guard workflow](https://github.com/nan-doctor/llm_wiki/actions/workflows/codex-quota-guard.yml?query=branch%3Acodex-quota-guard)。向 `myfork`（`https://github.com/nan-doctor/llm_wiki.git`）推送被安全审查要求取得对该具体目的地的显式授权，因此三平台 CI 和任务十四步骤 8、9 暂未完成；不得用本机结果替代。
