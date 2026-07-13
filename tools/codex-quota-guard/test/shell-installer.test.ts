@@ -175,7 +175,9 @@ describe("ShellInstaller", () => {
     expect(test.output.join("\n")).toContain(test.codexPath)
     expect(test.output.join("\n")).toContain(test.profilePath)
     expect(test.output.join("\n")).toContain(test.globalStore.configPath)
-    expect((await stat(path.join(shimDirectory, "codex"))).mode & 0o111).not.toBe(0)
+    if (process.platform !== "win32") {
+      expect((await stat(path.join(shimDirectory, "codex"))).mode & 0o111).not.toBe(0)
+    }
   })
 
   it("非 TTY 或确认文本不匹配时零写入", async () => {
@@ -293,24 +295,27 @@ describe("ShellInstaller", () => {
       .toBe("export USER_AFTER_INSTALL=1\n")
   })
 
-  it("status 只读检查 profile、shim、保存身份和 PATH 顺序", async () => {
-    const test = await harness()
-    await test.installer.install(context(test.codexPath))
+  it.skipIf(process.platform === "win32")(
+    "status 只读检查 POSIX profile、shim、保存身份和 PATH 顺序",
+    async () => {
+      const test = await harness()
+      await test.installer.install(context(test.codexPath))
 
-    await expect(test.installer.status()).resolves.toMatchObject({
-      status: "already-installed",
-      healthy: true,
-      issues: [],
-    })
+      await expect(test.installer.status()).resolves.toMatchObject({
+        status: "already-installed",
+        healthy: true,
+        issues: [],
+      })
 
-    const shimPath = path.join(test.globalStore.configDirectory, "shims", "codex")
-    await writeFile(shimPath, "modified", "utf8")
-    await expect(test.installer.status()).resolves.toMatchObject({
-      status: "already-installed",
-      healthy: false,
-      issues: expect.arrayContaining([expect.stringContaining("checksum")]),
-    })
-  })
+      const shimPath = path.join(test.globalStore.configDirectory, "shims", "codex")
+      await writeFile(shimPath, "modified", "utf8")
+      await expect(test.installer.status()).resolves.toMatchObject({
+        status: "already-installed",
+        healthy: false,
+        issues: expect.arrayContaining([expect.stringContaining("checksum")]),
+      })
+    },
+  )
 
   it("status 在 PATH 顺序错误或保存身份缺失时只读报告异常", async () => {
     const test = await harness({ currentPath: "/usr/bin:/bin" })
@@ -414,6 +419,12 @@ describe("ShellInstaller", () => {
     })
 
     await installer.install(context(codexPath))
+
+    await expect(installer.status()).resolves.toMatchObject({
+      status: "already-installed",
+      healthy: true,
+      issues: [],
+    })
 
     expect(await readFile(path.join(shimDirectory, "codex.cmd"), "utf8"))
       .toContain("%*")

@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto"
+import { spawn } from "node:child_process"
 import { EventEmitter } from "node:events"
+import { appendFileSync } from "node:fs"
 import {
   mkdtemp,
   readFile,
@@ -118,7 +120,8 @@ describe("默认终端代理 fake 端到端", () => {
     expect(result.exitCode).not.toBe(0)
     expect(result.transcript.filter((entry) => entry.event === "app-server-start"))
       .toHaveLength(1)
-    expect(result.transcript.some((entry) => entry.event === "tui-closed")).toBe(true)
+    expect(result.transcript.some((entry) => entry.event === "tui-process-exit"))
+      .toBe(true)
     expect(result.state.errors.join("\n")).toContain("App Server")
     await expectPathMissing(result.endpointDirectory)
   })
@@ -127,7 +130,8 @@ describe("默认终端代理 fake 端到端", () => {
     const result = await runFakeInteractive("weekly-only", { signal: "SIGINT" })
 
     expect(result.exitCode).toBe(130)
-    expect(result.transcript.some((entry) => entry.event === "tui-closed")).toBe(true)
+    expect(result.transcript.some((entry) => entry.event === "tui-process-exit"))
+      .toBe(true)
     expect(result.transcript.some((entry) => entry.event === "app-server-stop")).toBe(true)
     expect(result.transcript.some((entry) => (
       entry.method === "thread/backgroundTerminals/clean"
@@ -206,15 +210,31 @@ async function runFakeInteractive(
         stop: async () => await controller.stop(),
       }
     },
-    createTui: (options) => new TuiProcess({
-      executable: process.execPath,
-      codexArgsPrefix: [fakeCodex],
-      remoteAddress: options.remoteAddress,
-      tokenEnvironmentName: options.tokenEnvironmentName,
-      token: options.token,
-      tuiArgs: options.tuiArgs,
-      environment,
-    }),
+    createTui: (options) => new TuiProcess(
+      {
+        executable: process.execPath,
+        codexArgsPrefix: [fakeCodex],
+        remoteAddress: options.remoteAddress,
+        tokenEnvironmentName: options.tokenEnvironmentName,
+        token: options.token,
+        tuiArgs: options.tuiArgs,
+        environment,
+      },
+      (executable, args, spawnOptions) => {
+        const child = spawn(executable, args, spawnOptions)
+        child.once("exit", (code, signal) => {
+          appendFileSync(
+            transcriptPath,
+            `${JSON.stringify({
+              event: "tui-process-exit",
+              status: code === null ? signal ?? "unknown" : String(code),
+            })}\n`,
+            "utf8",
+          )
+        })
+        return child
+      },
+    ),
     tokenEnvironmentName: "CODEX_QUOTA_GUARD_REMOTE_TOKEN",
     signalSource,
   })

@@ -42,7 +42,7 @@ describe("GlobalConfigStore", () => {
     expect(await store.load()).toEqual(defaultGlobalGuardConfig())
   })
 
-  it("Unix 原子保存为 0700/0600 且更新不残留临时文件", async () => {
+  it("原子更新不残留临时文件且保留配置内容", async () => {
     const root = await temporaryRoot()
     const store = new GlobalConfigStore({
       platform: "darwin",
@@ -56,8 +56,6 @@ describe("GlobalConfigStore", () => {
       config.realCodexVersion = "codex-cli 1.0.0"
     })
 
-    expect((await stat(store.configDirectory)).mode & 0o777).toBe(0o700)
-    expect((await stat(store.configPath)).mode & 0o777).toBe(0o600)
     expect((await readdir(store.configDirectory)).filter((name) => name.includes(".tmp-")))
       .toEqual([])
     expect(await store.load()).toMatchObject({
@@ -66,6 +64,19 @@ describe("GlobalConfigStore", () => {
       realCodexVersion: "codex-cli 1.0.0",
     })
   })
+
+  it.skipIf(process.platform === "win32")(
+    "Unix 保存使用 0700/0600 权限",
+    async () => {
+      const root = await temporaryRoot()
+      const store = new GlobalConfigStore({ platform: "darwin", home: root })
+
+      await store.save(defaultGlobalGuardConfig())
+
+      expect((await stat(store.configDirectory)).mode & 0o777).toBe(0o700)
+      expect((await stat(store.configPath)).mode & 0o777).toBe(0o600)
+    },
+  )
 
   it("保存前只重建白名单字段且不保留认证材料", async () => {
     const root = await temporaryRoot()

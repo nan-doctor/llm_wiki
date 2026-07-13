@@ -40,7 +40,7 @@ export async function detectCurrentShell(
     : options.platform === "darwin" ? ".bash_profile" : ".bashrc"
   return {
     shell: loginShell,
-    profilePath: path.join(options.home, profileName),
+    profilePath: path.posix.join(options.home, profileName),
   }
 }
 
