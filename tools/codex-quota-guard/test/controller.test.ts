@@ -1,5 +1,8 @@
+import { EventEmitter } from "node:events"
 import { describe, expect, it } from "vitest"
+import type { GuardAppServerClient } from "../src/app-server/client.js"
 import { AppServerManager } from "../src/app-server/manager.js"
+import type { GetAccountRateLimitsResponse } from "../src/app-server/protocol.js"
 import { buildCapabilityMatrix, type ProtocolCapabilities } from "../src/doctor.js"
 import { GuardController, type GuardControllerOptions } from "../src/guard/controller.js"
 import {
@@ -30,6 +33,27 @@ class MemoryReporter implements ThresholdReporter {
   async write(state: PersistedGuardState): Promise<void> {
     if (state.lastThresholdEvent) this.eventIds.push(state.lastThresholdEvent.id)
   }
+}
+
+class FakeGuardClient extends EventEmitter implements GuardAppServerClient {
+  currentRateLimits: GetAccountRateLimitsResponse | null = response(snapshot())
+
+  async start(): Promise<void> {
+    this.emit("rateLimits", this.currentRateLimits)
+  }
+
+  async stop(): Promise<void> {}
+
+  async request<T>(): Promise<T> {
+    throw new Error("本测试不应请求 turn")
+  }
+
+  async refreshRateLimits(): Promise<GetAccountRateLimitsResponse> {
+    this.emit("rateLimits", this.currentRateLimits)
+    return this.currentRateLimits!
+  }
+
+  async waitForIdle(): Promise<void> {}
 }
 
 function setup(controllerOptions: GuardControllerOptions = {}) {
@@ -145,6 +169,16 @@ function resumableStateWithRuntime(context: RuntimeContext): PersistedGuardState
 }
 
 describe("GuardController", () => {
+  it("控制器只依赖 GuardAppServerClient 契约", async () => {
+    const client = new FakeGuardClient()
+    const controller = new GuardController(client, new MemoryRepository(), new MemoryReporter())
+
+    await controller.start()
+
+    expect(controller.status().state.quota?.protectedRemainingPercent).toBe(80)
+    await controller.stop()
+  })
+
   it("run 保存创建任务所用的运行身份", async () => {
     const context = runtimeContext()
     const test = setup({ runtimeContext: context } as GuardControllerOptions & {

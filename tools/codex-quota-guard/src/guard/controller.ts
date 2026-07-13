@@ -1,5 +1,8 @@
 import type { GetAccountRateLimitsResponse, ThreadGoal } from "../app-server/protocol.js"
-import { AppServerManager } from "../app-server/manager.js"
+import type {
+  GuardAppServerClient,
+  GuardNotification,
+} from "../app-server/client.js"
 import {
   finalizeLatencies,
   observeAuditPoint,
@@ -72,7 +75,7 @@ export class GuardController {
   private started = false
 
   constructor(
-    private readonly manager: AppServerManager,
+    private readonly manager: GuardAppServerClient,
     private readonly repository: GuardStateRepository,
     private readonly reporter: ThresholdReporter,
     options: GuardControllerOptions = {},
@@ -247,7 +250,7 @@ export class GuardController {
     this.queueBackground(this.handleRateLimits(limits))
   }
 
-  private readonly onNotification = (message: { method: string; params?: unknown }): void => {
+  private readonly onNotification = (message: GuardNotification): void => {
     if (message.method === "turn/completed") {
       this.queueBackground(this.handleTurnCompleted(message.params))
     } else if (message.method === "item/completed") {

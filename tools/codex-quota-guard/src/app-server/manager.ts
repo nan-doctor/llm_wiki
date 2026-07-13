@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events"
+import type { GuardAppServerClient, GuardNotification } from "./client.js"
 import type { AppServerConnection, ConnectionFactory } from "./connection.js"
 import type { GetAccountRateLimitsResponse } from "./protocol.js"
 
@@ -7,7 +8,7 @@ export interface AppServerManagerOptions {
   notificationRefreshDelayMs?: number
 }
 
-export class AppServerManager extends EventEmitter {
+export class AppServerManager extends EventEmitter implements GuardAppServerClient {
   currentRateLimits: GetAccountRateLimitsResponse | null = null
   private connection: AppServerConnection | null = null
   private stopped = true
@@ -56,7 +57,7 @@ export class AppServerManager extends EventEmitter {
   private async connectAndInitialize(): Promise<void> {
     const connection = this.factory()
     this.connection = connection
-    connection.on("notification", (message: { method: string; params?: unknown }) => {
+    connection.on("notification", (message: GuardNotification) => {
       this.handleNotification(message)
     })
     connection.on("diagnostic", (message: string) => this.emit("diagnostic", message))
@@ -77,7 +78,7 @@ export class AppServerManager extends EventEmitter {
     await this.refreshRateLimits()
   }
 
-  private handleNotification(message: { method: string; params?: unknown }): void {
+  private handleNotification(message: GuardNotification): void {
     this.emit("notification", message)
     if (message.method !== "account/rateLimits/updated") return
     if (this.notificationRefresh) return
