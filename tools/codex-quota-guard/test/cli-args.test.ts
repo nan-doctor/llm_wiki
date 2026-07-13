@@ -12,11 +12,13 @@ describe("parseCliArgs", () => {
       command: "doctor",
       json: true,
       liveCanary: true,
+      codexPath: undefined,
     })
     expect(parseCliArgs(["doctor"])).toEqual({
       command: "doctor",
       json: false,
       liveCanary: false,
+      codexPath: undefined,
     })
   })
 
@@ -43,6 +45,8 @@ describe("parseCliArgs", () => {
       maxRuntimeMs: 300_000,
       maxTurns: 3,
       requireProtection: true,
+      requireGoalControl: false,
+      codexPath: undefined,
       json: true,
     })
   })
@@ -58,7 +62,41 @@ describe("parseCliArgs", () => {
     expect(parseCliArgs(["resume", "--json"])).toEqual({
       command: "resume",
       prompt: undefined,
+      requireGoalControl: false,
+      codexPath: undefined,
       json: true,
+    })
+  })
+
+  it("四个命令都解析包含空格的 --codex-path", () => {
+    const codexPath = "/路径 含空格/codex"
+
+    expect(parseCliArgs(["status", "--codex-path", codexPath])).toMatchObject({
+      command: "status",
+      codexPath,
+    })
+    expect(parseCliArgs(["doctor", "--codex-path", codexPath])).toMatchObject({
+      command: "doctor",
+      codexPath,
+    })
+    expect(parseCliArgs(["run", "执行", "--codex-path", codexPath])).toMatchObject({
+      command: "run",
+      codexPath,
+    })
+    expect(parseCliArgs(["resume", "--codex-path", codexPath])).toMatchObject({
+      command: "resume",
+      codexPath,
+    })
+  })
+
+  it("run 和 resume 解析严格 Goal 控制", () => {
+    expect(parseCliArgs(["run", "执行", "--require-goal-control"])).toMatchObject({
+      command: "run",
+      requireGoalControl: true,
+    })
+    expect(parseCliArgs(["resume", "继续", "--require-goal-control"])).toMatchObject({
+      command: "resume",
+      requireGoalControl: true,
     })
   })
 
