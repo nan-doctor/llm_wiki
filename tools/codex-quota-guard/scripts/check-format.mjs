@@ -14,8 +14,9 @@ async function visit(directory) {
       const text = await readFile(file, "utf8")
       if (!text.endsWith("\n")) problems.push(`${file}: 缺少末尾换行`)
       text.split("\n").forEach((line, index) => {
-        if (/\s+$/.test(line)) problems.push(`${file}:${index + 1}: 行尾空白`)
-        if (line.includes("\t")) problems.push(`${file}:${index + 1}: 制表符`)
+        const content = line.endsWith("\r") ? line.slice(0, -1) : line
+        if (/[ \t]+$/.test(content)) problems.push(`${file}:${index + 1}: 行尾空白`)
+        if (content.includes("\t")) problems.push(`${file}:${index + 1}: 制表符`)
       })
     }
   }
