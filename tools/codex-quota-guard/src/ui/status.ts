@@ -31,6 +31,7 @@ export interface GuardStatusOutput {
     eventId: string | null
   }
   turns: TurnAdmission
+  activeThreadId: string | null
   active: { threadId: string; turnId: string } | null
   limits: PersistedGuardState["limits"]
   executable: {
@@ -105,6 +106,7 @@ export function buildStatusOutput(
       eventId: state.lastThresholdEvent?.id ?? null,
     },
     turns,
+    activeThreadId: state.activeThreadId,
     active: state.activeTurn
       ? { threadId: state.activeTurn.threadId, turnId: state.activeTurn.turnId }
       : null,

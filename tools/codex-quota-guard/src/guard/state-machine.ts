@@ -41,6 +41,7 @@ export interface PersistedGuardState {
   updatedAt: number
   quota: NormalizedQuota | null
   guard: GuardState
+  activeThreadId: string | null
   activeTurn: ActiveTurn | null
   lastThresholdEvent: QuotaThresholdEvent | null
   resumableEventId: string | null
@@ -80,6 +81,7 @@ export function createInitialState(): PersistedGuardState {
       thresholdHandled: false,
       lastProtectedRemainingPercent: null,
     },
+    activeThreadId: null,
     activeTurn: null,
     lastThresholdEvent: null,
     resumableEventId: null,

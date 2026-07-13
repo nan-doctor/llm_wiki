@@ -29,6 +29,12 @@ describe("StateStore", () => {
     await mkdir(stateDirectory, { recursive: true })
     const legacy = createInitialState() as unknown as Record<string, unknown>
     delete legacy.runtime
+    delete legacy.activeThreadId
+    legacy.activeTurn = {
+      threadId: "legacy-thread",
+      turnId: "legacy-turn",
+      startedAt: 123,
+    }
     const legacyGuard = legacy.guard as Record<string, unknown>
     legacy.guard = {
       ...legacyGuard,
@@ -41,6 +47,7 @@ describe("StateStore", () => {
     const loaded = await new StateStore(root).load() as unknown as {
       guard: { state: string; thresholdHandled: boolean; windowKey: string | null }
       runtime: unknown
+      activeThreadId: string | null
     }
 
     expect(loaded.runtime).toEqual({
@@ -49,6 +56,7 @@ describe("StateStore", () => {
       capabilities: null,
       changes: [],
     })
+    expect(loaded.activeThreadId).toBe("legacy-thread")
     expect(loaded.guard).toEqual({
       state: "HANDLED",
       thresholdHandled: true,

@@ -44,7 +44,7 @@ class FakeGuardClient extends EventEmitter implements GuardAppServerClient {
 
   async stop(): Promise<void> {}
 
-  async request<T>(): Promise<T> {
+  async request<T>(_method: string, _params?: unknown): Promise<T> {
     throw new Error("本测试不应请求 turn")
   }
 
@@ -54,6 +54,15 @@ class FakeGuardClient extends EventEmitter implements GuardAppServerClient {
   }
 
   async waitForIdle(): Promise<void> {}
+}
+
+class RecordingGuardClient extends FakeGuardClient {
+  readonly requests: Array<{ method: string; params?: unknown }> = []
+
+  override async request<T>(method: string, params?: unknown): Promise<T> {
+    this.requests.push({ method, params })
+    return {} as T
+  }
 }
 
 function setup(controllerOptions: GuardControllerOptions = {}) {
@@ -176,6 +185,128 @@ describe("GuardController", () => {
     await controller.start()
 
     expect(controller.status().state.quota?.protectedRemainingPercent).toBe(80)
+    await controller.stop()
+  })
+
+  it("交互会话只接受当前 generation 并精确跟踪 active thread 和 turn", async () => {
+    const client = new FakeGuardClient()
+    const repository = new MemoryRepository()
+    repository.state = createInitialState()
+    repository.state.activeTurn = {
+      threadId: "stale-thread",
+      turnId: "stale-turn",
+      startedAt: 1,
+    }
+    const controller = new GuardController(client, repository, new MemoryReporter(), {
+      now: () => 20_000,
+      interactiveSession: {
+        generation: "new-generation",
+        clearUnboundActiveTurnOnStart: true,
+      },
+    })
+
+    await controller.start()
+    expect(controller.status().state.activeTurn).toBeNull()
+    expect(controller.status().state.activeThreadId).toBeNull()
+
+    client.emit("notification", {
+      method: "turn/started",
+      params: { threadId: "old-thread", turn: { id: "old-turn" } },
+      sessionGeneration: "old-generation",
+    })
+    await controller.waitForIdle()
+    expect(controller.status().state.activeTurn).toBeNull()
+
+    client.emit("notification", {
+      method: "thread/started",
+      params: { thread: { id: "thread-2" } },
+      sessionGeneration: "new-generation",
+    })
+    client.emit("notification", {
+      method: "turn/started",
+      params: { threadId: "thread-2", turn: { id: "turn-2" } },
+      sessionGeneration: "new-generation",
+    })
+    await controller.waitForIdle()
+    expect(controller.status().state.activeThreadId).toBe("thread-2")
+    expect(controller.status().state.activeTurn).toEqual({
+      threadId: "thread-2",
+      turnId: "turn-2",
+      startedAt: 20_000,
+    })
+
+    client.emit("notification", {
+      method: "turn/completed",
+      params: { threadId: "thread-2", turn: { id: "other-turn", status: "completed" } },
+      sessionGeneration: "new-generation",
+    })
+    await controller.waitForIdle()
+    expect(controller.status().state.activeTurn?.turnId).toBe("turn-2")
+
+    client.emit("notification", {
+      method: "turn/completed",
+      params: { threadId: "thread-2", turn: { id: "turn-2", status: "completed" } },
+      sessionGeneration: "new-generation",
+    })
+    await controller.waitForIdle()
+    expect(controller.status().state.activeTurn).toBeNull()
+    expect(controller.status().state.activeThreadId).toBe("thread-2")
+    await controller.stop()
+  })
+
+  it("交互会话关闭幂等中断当前 turn 并只清理当前 thread", async () => {
+    const client = new RecordingGuardClient()
+    client.currentRateLimits = response(snapshot({
+      primary: window(98, 8_000, 10_080),
+      secondary: null,
+    }))
+    const controller = new GuardController(
+      client,
+      new MemoryRepository(),
+      new MemoryReporter(),
+      {
+        now: () => 20_000,
+        interactiveSession: {
+          generation: "session-close",
+          clearUnboundActiveTurnOnStart: true,
+        },
+      },
+    )
+    await controller.start()
+    client.emit("notification", {
+      method: "thread/started",
+      params: { thread: { id: "thread-close" } },
+      sessionGeneration: "session-close",
+    })
+    client.emit("notification", {
+      method: "turn/started",
+      params: { threadId: "thread-close", turn: { id: "turn-close" } },
+      sessionGeneration: "session-close",
+    })
+    await controller.waitForIdle()
+    const before = controller.status().state
+
+    await Promise.all([
+      controller.shutdownInteractiveSession(),
+      controller.shutdownInteractiveSession(),
+    ])
+
+    expect(client.requests.filter((request) => request.method === "turn/interrupt"))
+      .toEqual([{
+        method: "turn/interrupt",
+        params: { threadId: "thread-close", turnId: "turn-close" },
+      }])
+    expect(client.requests.filter((request) => (
+      request.method === "thread/backgroundTerminals/clean"
+    ))).toEqual([{
+      method: "thread/backgroundTerminals/clean",
+      params: { threadId: "thread-close" },
+    }])
+    const after = controller.status().state
+    expect(after.activeTurn).toBeNull()
+    expect(after.guard).toEqual(before.guard)
+    expect(after.quota).toEqual(before.quota)
+    expect(after.lastThresholdEvent).toEqual(before.lastThresholdEvent)
     await controller.stop()
   })
 
@@ -754,6 +885,10 @@ describe("GuardController", () => {
     repository.state = state
     const controller = new GuardController(manager, repository, new MemoryReporter(), {
       now: () => 20_000,
+      interactiveSession: {
+        generation: "recovered-session",
+        clearUnboundActiveTurnOnStart: true,
+      },
     })
 
     await controller.start()

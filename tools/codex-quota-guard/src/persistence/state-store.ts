@@ -32,6 +32,7 @@ export class StateStore implements GuardStateRepository {
     value.limits.requireProtection ??= false
     value.limits.requireGoalControl ??= false
     value.goalControl ??= "unavailable"
+    value.activeThreadId ??= value.activeTurn?.threadId ?? null
     if (value.lastThresholdEvent) {
       value.lastThresholdEvent.goalErrorCategory ??= null
       value.lastThresholdEvent.audit ??= createAuditRecord("quotaThreshold")

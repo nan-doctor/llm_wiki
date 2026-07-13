@@ -19,6 +19,10 @@ const critical = (fiveHourReset = 2_000, weeklyReset = 8_000) => normalizeRateLi
 })), 11_000)
 
 describe("额度边沿状态机", () => {
+  it("初始状态不绑定任何交互 thread", () => {
+    expect(createInitialState().activeThreadId).toBeNull()
+  })
+
   it("从安全跨到 CRITICAL 时固定快照原 active turn", () => {
     let state = applyQuotaObservation(createInitialState(), safe(), null, 10_000).state
     const oldTurn = { threadId: "thread-old", turnId: "turn-old", startedAt: 10_100 }

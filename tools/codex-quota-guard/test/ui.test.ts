@@ -79,6 +79,7 @@ describe("状态输出", () => {
         thresholdHandled: true,
       },
       turns: "ALLOWED",
+      activeThreadId: null,
       active: null,
       executable: {
         codexExecutable: "/absolute/codex",

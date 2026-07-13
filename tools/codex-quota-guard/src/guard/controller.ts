@@ -37,6 +37,10 @@ export interface GuardControllerOptions {
   unknownRetryMs?: number
   runtimeContext?: RuntimeContext
   auditClock?: AuditClock
+  interactiveSession?: {
+    generation: string
+    clearUnboundActiveTurnOnStart: boolean
+  }
 }
 
 export interface RunOptions {
@@ -65,6 +69,7 @@ export class GuardController {
   private readonly unknownWaitMs: number
   private readonly unknownRetryMs: number
   private readonly runtimeContext: RuntimeContext | null
+  private readonly interactiveSession: GuardControllerOptions["interactiveSession"]
   private readonly auditClock: AuditClock
   private readonly auditPoints = new Map<string, AuditMonotonicPoints>()
   private lastQuotaObservation: { utcTimestamp: string; monotonicTimestamp: number } | null = null
@@ -72,6 +77,7 @@ export class GuardController {
   private readonly backgroundTasks = new Set<Promise<void>>()
   private readonly completedTurnStatuses = new Map<string, string>()
   private readonly turnWaiters = new Map<string, (status: string) => void>()
+  private interactiveShutdownPromise: Promise<void> | null = null
   private started = false
 
   constructor(
@@ -85,6 +91,7 @@ export class GuardController {
     this.unknownWaitMs = options.unknownWaitMs ?? 15_000
     this.unknownRetryMs = options.unknownRetryMs ?? 500
     this.runtimeContext = options.runtimeContext ?? null
+    this.interactiveSession = options.interactiveSession
     this.auditClock = options.auditClock ?? {
       utcNow: () => new Date(this.now()).toISOString(),
       monotonicNow: () => performance.now(),
@@ -94,6 +101,7 @@ export class GuardController {
   async start(): Promise<void> {
     if (this.started) return
     this.state = await this.repository.load() ?? createInitialState()
+    await this.prepareInteractiveSessionState()
     this.applyCurrentRuntimeContext()
     this.manager.on("rateLimits", this.onRateLimits)
     this.manager.on("notification", this.onNotification)
@@ -246,12 +254,25 @@ export class GuardController {
     await this.waitForBackgroundTasks()
   }
 
+  async shutdownInteractiveSession(): Promise<void> {
+    if (this.interactiveShutdownPromise) return await this.interactiveShutdownPromise
+    const operation = this.shutdownInteractiveSessionInternal()
+    this.interactiveShutdownPromise = operation
+    await operation
+  }
+
   private readonly onRateLimits = (limits: GetAccountRateLimitsResponse): void => {
     this.queueBackground(this.handleRateLimits(limits))
   }
 
   private readonly onNotification = (message: GuardNotification): void => {
-    if (message.method === "turn/completed") {
+    if (this.interactiveSession
+      && message.sessionGeneration !== this.interactiveSession.generation) return
+    if (message.method === "thread/started") {
+      this.queueBackground(this.handleThreadStarted(message.params))
+    } else if (message.method === "turn/started") {
+      this.queueBackground(this.handleTurnStarted(message.params))
+    } else if (message.method === "turn/completed") {
       this.queueBackground(this.handleTurnCompleted(message.params))
     } else if (message.method === "item/completed") {
       this.queueBackground(this.handleItemCompleted(message.params))
@@ -290,6 +311,81 @@ export class GuardController {
         return
       }
       await this.handleThresholdEvent(transition.event.id)
+    })
+  }
+
+  private async prepareInteractiveSessionState(): Promise<void> {
+    const session = this.interactiveSession
+    if (!session?.clearUnboundActiveTurnOnStart) return
+    const fixedTarget = this.state.guard.state === "HANDLING"
+      ? this.state.lastThresholdEvent?.target ?? null
+      : null
+    if (fixedTarget) return
+    if (this.state.activeTurn === null && this.state.activeThreadId === null) return
+    this.state.activeTurn = null
+    this.state.activeThreadId = null
+    this.state.updatedAt = this.now()
+    await this.repository.save(this.state)
+  }
+
+  private async handleThreadStarted(params: unknown): Promise<void> {
+    await this.mutex.run(async () => {
+      const value = params as { thread?: { id?: string } }
+      if (typeof value.thread?.id !== "string") return
+      this.state.activeThreadId = value.thread.id
+      this.state.updatedAt = this.now()
+      await this.repository.save(this.state)
+    })
+  }
+
+  private async handleTurnStarted(params: unknown): Promise<void> {
+    await this.mutex.run(async () => {
+      const value = params as { threadId?: string; turn?: { id?: string } }
+      if (typeof value.threadId !== "string" || typeof value.turn?.id !== "string") return
+      this.state.activeThreadId = value.threadId
+      this.state.activeTurn = {
+        threadId: value.threadId,
+        turnId: value.turn.id,
+        startedAt: this.now(),
+      }
+      this.state.updatedAt = this.now()
+      await this.repository.save(this.state)
+    })
+  }
+
+  private async shutdownInteractiveSessionInternal(): Promise<void> {
+    await this.mutex.run(async () => {
+      const activeTurn = this.state.activeTurn ? { ...this.state.activeTurn } : null
+      const activeThreadId = this.state.activeThreadId ?? activeTurn?.threadId ?? null
+      if (activeTurn) {
+        try {
+          await this.manager.request("turn/interrupt", {
+            threadId: activeTurn.threadId,
+            turnId: activeTurn.turnId,
+          })
+        } catch (error) {
+          if (!isIdempotentInterruptError(error)) {
+            this.state.errors.push(`交互会话关闭中断失败：${errorMessage(error)}`)
+          }
+        }
+      }
+      if (activeThreadId) {
+        try {
+          await this.manager.request("thread/backgroundTerminals/clean", {
+            threadId: activeThreadId,
+          })
+        } catch (error) {
+          this.state.errors.push(`交互会话后台 terminal 清理失败：${errorMessage(error)}`)
+        }
+      }
+      if (activeTurn
+        && this.state.activeTurn?.threadId === activeTurn.threadId
+        && this.state.activeTurn.turnId === activeTurn.turnId) {
+        this.state.activeTurn = null
+      }
+      this.state.errors = this.state.errors.slice(-50)
+      this.state.updatedAt = this.now()
+      await this.repository.save(this.state)
     })
   }
 
@@ -559,6 +655,7 @@ export class GuardController {
       experimentalRawEvents: false,
       persistExtendedHistory: false,
     })
+    this.state.activeThreadId = response.thread.id
     return response.thread.id
   }
 
@@ -568,6 +665,7 @@ export class GuardController {
       excludeTurns: true,
       persistExtendedHistory: false,
     })
+    this.state.activeThreadId = response.thread.id
     return response.thread.id
   }
 
@@ -578,6 +676,7 @@ export class GuardController {
     })
     const turnId = await this.resolveRuntimeTurnId(threadId, response.turn.id)
     const started = { threadId, turnId }
+    this.state.activeThreadId = threadId
     this.state.activeTurn = { ...started, startedAt: this.now() }
     this.state.limits.turnsStarted += 1
     this.state.updatedAt = this.now()
