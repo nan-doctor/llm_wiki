@@ -4,6 +4,8 @@ Codex Quota Guard 是一个本地终端工具。它通过官方 `codex app-serve
 
 工具不抓取 ChatGPT 网页，不读取或复制认证 token，不调用未记录的私有 HTTP 接口，也不会为了生成阈值报告而额外调用模型。
 
+`0.1.0` 已完成 macOS 实机 App Server/Goal/精确中断验收，并在 GitHub Actions 的 macOS、Linux、Windows 上通过安装、格式、类型、86 项 fake transport 测试、构建和打包，可作为首个正式可用基线。
+
 ## 运行环境
 
 - Node.js 20 或更高版本。
