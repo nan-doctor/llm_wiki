@@ -1,0 +1,40 @@
+name: Codex Quota Guard
+
+on:
+  push:
+    paths:
+      - "tools/codex-quota-guard/**"
+      - ".github/workflows/codex-quota-guard.yml"
+  pull_request:
+    paths:
+      - "tools/codex-quota-guard/**"
+      - ".github/workflows/codex-quota-guard.yml"
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: ${{ matrix.os }} · Node.js 20
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-latest
+          - ubuntu-latest
+          - windows-latest
+    defaults:
+      run:
+        working-directory: tools/codex-quota-guard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20.19.0
+          cache: npm
+          cache-dependency-path: tools/codex-quota-guard/package-lock.json
+      - run: npm ci --ignore-scripts
+      - run: npm run format:check
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: npm pack --dry-run

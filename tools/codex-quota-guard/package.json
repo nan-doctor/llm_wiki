@@ -1,0 +1,29 @@
+{
+  "name": "codex-quota-guard",
+  "version": "0.1.0",
+  "description": "基于 Codex App Server 的本地额度显示与单轮保护控制器",
+  "type": "module",
+  "private": true,
+  "files": [
+    "dist/",
+    "README.md"
+  ],
+  "bin": {
+    "codex-quota-guard": "dist/src/cli.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepack": "npm run build",
+    "typecheck": "tsc -p tsconfig.test.json --noEmit",
+    "format:check": "node scripts/check-format.mjs",
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.7.3",
+    "vitest": "^4.1.4"
+  }
+}

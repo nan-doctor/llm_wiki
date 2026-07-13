@@ -23,6 +23,9 @@ src-tauri/gen/
 
 # Internal docs (not shipped)
 docs/
+!docs/
+docs/*
+!docs/codex-quota-guard-plan.md
 AGENTS.md
 
 # Benchmark and test data (local only)
@@ -49,3 +52,6 @@ pnpm-debug.log*
 # Brainstorm assets (not tracked in source control)
 .superpowers/
 .claude/
+
+# Codex Quota Guard runtime state
+/.codex-guard/
