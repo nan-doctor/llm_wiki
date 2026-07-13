@@ -193,7 +193,8 @@ describe("TuiProcess", () => {
       return child as unknown as ChildProcess
     }
     const tui = new TuiProcess({
-      executable: "/path with spaces/codex",
+      executable: "/path with spaces/node",
+      codexArgsPrefix: ["/path with spaces/fake-codex.mjs"],
       remoteAddress: "unix:///tmp/guard.sock",
       tokenEnvironmentName: "CODEX_QUOTA_GUARD_REMOTE_TOKEN",
       token: "secret-token",
@@ -204,8 +205,9 @@ describe("TuiProcess", () => {
     await tui.start()
 
     expect(captured).toMatchObject({
-      executable: "/path with spaces/codex",
+      executable: "/path with spaces/node",
       args: [
+        "/path with spaces/fake-codex.mjs",
         "--remote",
         "unix:///tmp/guard.sock",
         "--remote-auth-token-env",

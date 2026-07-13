@@ -4,7 +4,7 @@ Codex Quota Guard 是一个本地终端工具。它通过官方 `codex app-serve
 
 工具不抓取 ChatGPT 网页，不读取或复制认证 token，不调用未记录的私有 HTTP 接口，也不会为了生成阈值报告而额外调用模型。
 
-`0.2.0` 在既有一次性 5 小时额度边沿保护上增加了不可静默切换的 Codex 可执行文件解析、运行环境漂移检测、五级能力证据、Goal 安全降级和可审计中断时延。
+`0.3.0` 增加默认 Codex 终端启动器：用户确认安装当前 shell 的可逆 shim 后，直接输入 `codex` 即可打开受保护的原生 Codex TUI。额度保护规则由工具自动执行，任务提示在 TUI 内输入，不需要在提示词中重复说明额度阈值。
 
 ## 运行环境
 
@@ -27,7 +27,7 @@ npm run build
 ```bash
 npm pack --pack-destination /private/tmp
 npm install --prefix /private/tmp/codex-quota-guard-prefix \
-  /private/tmp/codex-quota-guard-0.2.0.tgz --ignore-scripts
+  /private/tmp/codex-quota-guard-0.3.0.tgz --ignore-scripts
 /private/tmp/codex-quota-guard-prefix/bin/codex-quota-guard --help
 ```
 
@@ -44,6 +44,83 @@ node /绝对路径/llm_wiki/tools/codex-quota-guard/dist/src/cli.js status
 ```
 
 也可以在工具目录执行 `npm link`，之后使用 `codex-quota-guard` 命令；卸载时执行 `npm unlink -g codex-quota-guard`。
+
+## 默认 Codex 终端启动器
+
+首次安装只在交互式 TTY 中进行：
+
+```bash
+codex-quota-guard shell install \
+  --codex-path "/Applications/ChatGPT.app/Contents/Resources/codex"
+```
+
+安装器先显示将修改的当前 shell profile、全局 Guard 配置、独立 shim 目录和已验证的真实 Codex 绝对路径；只有输入完全匹配的 `INSTALL` 才会写入。macOS 和 Linux 支持当前 zsh 或 bash，Windows 支持当前 PowerShell。它不会顺带修改其他 shell。默认 shim 目录为：
+
+```text
+~/.local/share/codex-quota-guard/shims/
+```
+
+Windows 使用 `%LOCALAPPDATA%\codex-quota-guard\shims\`。安装器只向当前 profile 追加带固定开始/结束标记的 PATH 块，并原子写入两份带 checksum 的受管 shim。它不会替换、删除或改写真实 Codex 二进制，不会修改 `~/.codex/config.toml`，也不会修改模型、reasoning、sandbox、approval、MCP 或登录设置。npm 安装本身只发布 `codex-quota-guard`，不会静默创建 `codex` 或 `codex-raw`。
+
+安装后，在新 shell 中运行：
+
+```bash
+codex
+```
+
+这会直接打开原生 Codex TUI。实际任务、slash command、审批和 Goal 操作都在 TUI 内完成；无须在命令行提供任务提示，也无须重复“额度到 2% 时暂停”等规则。直接运行工具入口也等价：
+
+```bash
+codex-quota-guard interactive
+codex-quota-guard interactive --require-protection
+codex-quota-guard interactive -- --model <模型>
+```
+
+连接始终采用单上游连接：
+
+```text
+原生 Codex TUI
+        ↕ 本地、带临时 capability token 的 WebSocket
+Codex Quota Guard 透明 JSON-RPC 代理与任务控制器
+        ↕ 唯一 stdio 连接
+真实 codex app-server
+```
+
+Guard 是真实 App Server 的唯一客户端。代理原样转发请求、响应、通知、App Server 主动请求、审批和未知协议字段；Guard 注入请求使用独立 ID 命名空间。macOS/Linux endpoint 位于权限受限的随机临时 Unix socket，Windows 只监听 `127.0.0.1` 的随机端口。随机 token 只通过临时环境变量交给本次 TUI，不进入命令行、状态、报告、配置或上游 App Server 环境；退出后 socket、临时目录和内存 token 都会清理。
+
+查看安装完整性或卸载：
+
+```bash
+codex-quota-guard shell status
+codex-quota-guard shell status --json
+codex-quota-guard shell uninstall
+```
+
+卸载必须在当前 shell 的 TTY 中输入完全匹配的 `UNINSTALL`。它只删除 checksum 和内容都匹配的受管 shim、当前 shell 的完整标记块；未知文件或被修改的块会保留并报冲突。最后一个 shell 卸载后 shim 目录才删除。重新打开 shell 后，PATH 恢复到安装前的真实 `codex` 解析；重复 install/uninstall 都是幂等的。
+
+若保存的真实 Codex 被移动、删除、失去执行权限、变成 Guard/shim，或版本与协议发生变化，wrapper 会拒绝递归或不安全启动，并提示运行 `doctor` 或重新安装。不会改查 PATH 后的另一份 Codex。guarded interactive 每次都针对保存的同一绝对路径重新执行版本、帮助和 schema 探测；只有透明 remote 能力完整时才启动 TUI。
+
+## wrapper 路由与明确旁路
+
+- `codex`：启动受保护的原生交互 TUI。
+- `codex --<原生交互参数>`：把兼容参数传给 TUI；`--remote` 和认证参数由 Guard 独占，用户不能覆盖。
+- `codex-raw ...`、`codex raw ...`：直接执行保存的真实 Codex，并在交互式终端醒目提示本次不受额度保护。
+- `CODEX_QUOTA_GUARD_BYPASS=1 codex ...`：只旁路当前调用，不写配置，也不清除 `HANDLED` 记录。
+- `codex login|logout|mcp|app-server|completion|plugin|mcp-server|remote-control|update|doctor|features ...`：显示一行说明后透明执行原生管理命令，不启动额度控制会话。
+- `codex exec ...`：首版明确拒绝，以免破坏原生命令的参数和退出码语义；改用 `codex-quota-guard run <提示>`，或明确选择无保护的 `codex-raw exec ...`。
+- `codex --version`：显示 wrapper `0.3.0`、真实绝对路径、保存版本和实测版本；`codex-raw --version` 的 stdout 保持原始结果。
+- 未知子命令：非 TTY 直接失败；TTY 显示解析结果，只有用户明确输入 `raw` 才旁路，空输入或其他内容均取消。未知文本不会被擅自当作任务提示。
+
+当 `defaultInteractiveProtection=false` 时，无参数 `codex` 也会明确拒绝而不是静默 raw。配置只写 Guard 自己的全局文件：
+
+```bash
+codex-quota-guard config show
+codex-quota-guard config show --json
+codex-quota-guard config set default-require-protection true
+codex-quota-guard config set default-require-protection false
+```
+
+`defaultRequireProtection=false` 是默认值：5 小时窗口暂时不可见时仍显示 `guard: DORMANT`、`turns: ALLOWED` 并允许 TUI。设为 true 后，只有唯一有效的 300 分钟窗口可用且已建立安全基线时才打开 TUI。
 
 ## Codex 可执行文件选择
 
@@ -198,6 +275,8 @@ Goal 控制与额度中断保护相互独立。Goal schema 存在但数据库或
 
 状态使用临时文件、文件同步和原子重命名。进程锁带心跳和崩溃锁接管。状态与报告会移除 token、cookie、authorization、secret 和 API key 等敏感字段。
 
+交互代理不会把用户 prompt、模型输出、工具调用正文或审批决定写入 Guard 状态和阈值报告。透明转发只发生在本次内存会话中；本地报告仍只包含额度事件、固定 turn 身份、已完成 item 摘要、错误和 Git 状态。Codex App、IDE 集成、`codex-raw`、独立 CLI 和其他进程不经过本工具，也不受该 Guard 控制。
+
 本地报告只包含阈值事件、固定 turn、额度快照、已完成 item 摘要、错误和 Git 状态，不调用模型生成停止总结。报告把真实额度事件标为 `quotaThreshold`，把显式 canary 标为 `liveCanary`，并保存可用的 UTC 时间及由单调时钟计算的请求时延；缺少通知或对账证据时对应字段保持 `null`。
 
 ## 测试
@@ -209,7 +288,7 @@ npm test
 npm run build
 ```
 
-所有自动化测试均使用 fake App Server transport。`npm test` 不启动真实 Codex，不访问真实账户，也不调用真实 `turn/start`。
+所有自动化测试均使用 fake App Server transport 和 fake remote TUI。`npm test` 不启动真实 Codex，不访问真实账户，也不调用真实模型 `turn/start`。端到端测试虽然穿透真实 stdio、Unix socket/loopback WebSocket、代理和子进程清理，但发送的是空 fake turn，额度、审批和通知全部由本地脚本产生。
 
 仓库 CI 在 macOS、Linux 和 Windows 上使用 Node.js 20.19 运行安装、依赖树、格式、类型、全部 fake transport 测试、构建和打包检查。子进程测试会通过 `process.execPath` 启动含空格路径中的 fake App Server；进程锁和原子状态写入测试使用各平台系统临时目录。Linux 和 Windows CI 证明跨平台 resolver 与控制逻辑，不证明当地存在真实 ChatGPT 登录或额度窗口；真实 App Server 兼容性由 macOS 上的普通 doctor 安全探测记录。
 
@@ -232,8 +311,10 @@ CODEX_QUOTA_GUARD_LIVE_CANARY=I_ACCEPT_MODEL_USAGE codex-quota-guard doctor --li
 - App Server 只在服务端推送或主动轮询得到新快照后，工具才能观察额度变化。网络延迟、服务端取整和快照刷新粒度意味着无法在数学意义上保证恰好停在 `2.000%`；保证的是首次观察到“先前高于 2%，当前不高于 2%”后，原子固定并中断当时的 active turn。
 - Goal 和后台 terminal 清理在 `codex-cli 0.131.0` 中需要 `experimentalApi`。缺失时工具保留 turn 中断，记录协议降级，且绝不以清除 Goal 代替暂停。
 - `codex-cli 0.131.0` 的 Goal 仍是默认关闭的实验功能，工具使用公开的 `--enable goals` 启动 App Server。schema 中存在 Goal 方法和 paused 状态并不证明本机 Goal 数据库可用；`doctor --live-canary` 会把 `no such table: thread_goals` 等运行时问题准确标为失败，不会修改用户的 Codex 数据库来伪造通过。
-- 首版没有交互式审批界面。App Server 发来的命令审批、文件审批、用户输入等双向 JSON-RPC 请求会收到明确的“不支持”错误并写入本地诊断，而不是被误当成响应后静默挂起；因此需要交互批准的 turn 会失败并以非零状态退出。
+- 单轮 `run` 路径没有独立审批界面；需要审批的非交互 turn 会明确失败。`interactive` 使用原生 Codex TUI，App Server 的命令审批、文件审批和用户输入请求由透明代理双向转发给原生界面。
 - 首版是单轮控制器，不是长任务编排器。每次 `run` 或带提示的 `resume` 最多启动一个 turn。
 - 工具只能可靠控制由自身 App Server 会话创建或续接的 thread，不能安全附加到独立、不可控制的 Codex CLI 进程。
+- 默认终端集成只影响安装标记块生效的当前 shell；Codex App、IDE、其他终端配置和已运行的独立进程不受控制。
+- 原生 TUI 的 `--remote`、认证环境变量和 App Server 协议能力仍需针对当前 Codex 版本现场探测。任一安全透明代理能力缺失时，`interactive` 和 `shell install` 都拒绝接管默认 `codex`，并保留显式工具入口作为退化路径。
 - 若协议同时返回多个可用于保护的 300 分钟窗口，工具按能力暂不可用处理并显示 `DORMANT`，不会任意选择 primary 或 secondary。
 - `doctor` 在 App Server 和额度读取正常、但快照只有 weekly 等非 5 小时窗口时返回 `degraded` 而不是 `failed`；这表示当前无法提供 5 小时保护，不表示工具或额度读取失败。

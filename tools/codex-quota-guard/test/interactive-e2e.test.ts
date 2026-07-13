@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { EventEmitter } from "node:events"
 import {
-  chmod,
   mkdtemp,
   readFile,
   readdir,
@@ -138,7 +137,6 @@ async function runFakeInteractive(
   const root = await mkdtemp(path.join(os.tmpdir(), `cqg-e2e-${scenario}-`))
   roots.push(root)
   const transcriptPath = path.join(root, "transcript.jsonl")
-  await chmod(fakeCodex, 0o755)
   const environment: NodeJS.ProcessEnv = {
     ...process.env,
     CODEX_QUOTA_GUARD_FAKE_SCENARIO: scenario,
@@ -152,7 +150,8 @@ async function runFakeInteractive(
     inspectGit: async () => "## fake-git\n M fake-file",
   })
   const raw = new RawAppServerProcess({
-    codexPath: fakeCodex,
+    codexPath: process.execPath,
+    codexArgsPrefix: [fakeCodex],
     enableGoals: true,
     environment,
   })
@@ -202,7 +201,8 @@ async function runFakeInteractive(
       }
     },
     createTui: (options) => new TuiProcess({
-      executable: fakeCodex,
+      executable: process.execPath,
+      codexArgsPrefix: [fakeCodex],
       remoteAddress: options.remoteAddress,
       tokenEnvironmentName: options.tokenEnvironmentName,
       token: options.token,

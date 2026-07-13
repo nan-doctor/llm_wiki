@@ -222,7 +222,15 @@ describe("executeCli", () => {
     expect(test.output[0]).toContain("--require-protection")
     expect(test.output[0]).toContain("--codex-path <绝对路径>")
     expect(test.output[0]).toContain("codex-quota-guard interactive")
+    expect(test.output[0]).toContain("codex-quota-guard shell install")
+    expect(test.output[0]).toContain("codex-quota-guard shell status")
+    expect(test.output[0]).toContain("codex-quota-guard shell uninstall")
+    expect(test.output[0]).toContain("codex-quota-guard config show")
+    expect(test.output[0]).toContain(
+      "codex-quota-guard config set default-require-protection true|false",
+    )
     expect(test.output[0]).toContain("任务提示请在 TUI 内输入")
+    expect(test.output[0]).toContain("旁路：codex-raw")
     expect(test.output[0]).not.toContain("__shim")
   })
 

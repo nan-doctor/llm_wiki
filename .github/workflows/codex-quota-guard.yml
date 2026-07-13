@@ -4,10 +4,12 @@ on:
   push:
     paths:
       - "tools/codex-quota-guard/**"
+      - "docs/codex-quota-guard-plan.md"
       - ".github/workflows/codex-quota-guard.yml"
   pull_request:
     paths:
       - "tools/codex-quota-guard/**"
+      - "docs/codex-quota-guard-plan.md"
       - ".github/workflows/codex-quota-guard.yml"
   workflow_dispatch:
 

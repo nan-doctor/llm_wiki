@@ -633,6 +633,7 @@ function formatHelp(): string {
 
 说明：
   interactive             无需命令行提示；任务提示请在 TUI 内输入
+  旁路：codex-raw         明确执行保存的真实 Codex，不启动额度保护
   --codex-path <绝对路径>  为本次命令明确选择 Codex，不静默回退
   --require-protection  仅当 5 小时保护窗口可用时允许本次 run
   --require-goal-control  仅当 Goal pause/resume 可运行时允许启动 turn

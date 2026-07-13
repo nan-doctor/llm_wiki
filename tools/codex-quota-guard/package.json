@@ -1,6 +1,6 @@
 {
   "name": "codex-quota-guard",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "基于 Codex App Server 的本地额度显示与单轮保护控制器",
   "type": "module",
   "private": true,

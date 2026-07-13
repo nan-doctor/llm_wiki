@@ -67,7 +67,7 @@ export class AppServerManager extends EventEmitter implements GuardAppServerClie
       clientInfo: {
         name: "codex_quota_guard",
         title: "Codex Quota Guard",
-        version: "0.2.0",
+        version: "0.3.0",
       },
       capabilities: {
         experimentalApi: true,

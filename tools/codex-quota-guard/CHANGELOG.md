@@ -1,5 +1,16 @@
 # 变更记录
 
+## 0.3.0
+
+- 新增 `interactive`：通过单连接透明 JSON-RPC 代理把原生 Codex TUI 接到 Guard 唯一控制的真实 App Server，同时保持审批、双向 server request、未知方法和扩展字段语义。
+- 新增用户确认的 `shell install/status/uninstall`，只修改当前 zsh、bash 或 PowerShell；受管 shim 带 checksum、事务回滚、冲突拒绝和完整卸载，不替换真实 Codex，也不修改 `~/.codex/config.toml`。
+- 新增默认 `codex` 路由、`codex-raw`、`codex raw` 和单次 `CODEX_QUOTA_GUARD_BYPASS=1`；管理命令透明转发，`exec` 与未知命令默认 fail-closed。
+- 新增全局 Guard 配置、保存的真实 Codex 绝对路径/版本、重复安装真实路径复用、版本漂移诊断和每次 guarded interactive 的现场 schema/remote 能力复检。
+- 新增 Unix socket、Windows loopback WebSocket、临时 capability token、精确子进程退出码和 TUI/App Server/Ctrl-C 资源清理。
+- 新增 fake TUI → Guard proxy → fake App Server 的零模型端到端覆盖，直接证明 5 小时边沿只中断首个 turn、`HANDLED` 后第二个 turn 放行、weekly-only 不触发、审批往返和未知通知透明。
+- remote TUI、认证环境变量和 transport 仍按当前 Codex 版本现场探测，属于实验能力边界。缺少任一安全透明代理能力时，`interactive` 与 `shell install` 明确拒绝，不采用双客户端、网页抓取或私有 HTTP 退化方案。
+- 保持核心语义：保护只针对唯一 `windowDurationMins === 300` 窗口；weekly 永不触发；同一 windowKey 最多中断一次；`HANDLED` 后新 turn 继续允许；不增加全局停止 latch。
+
 ## 0.2.0
 
 - 新增统一 Codex 可执行文件 resolver，固定采用命令行参数、环境变量、项目配置、`PATH` 的优先级；macOS 应用内置二进制只作为候选提示，绝不静默启动或回退。

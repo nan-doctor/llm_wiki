@@ -3,6 +3,7 @@ import path from "node:path"
 
 export interface TuiProcessOptions {
   executable: string
+  codexArgsPrefix?: string[]
   remoteAddress: string
   tokenEnvironmentName: string
   token: string
@@ -27,6 +28,7 @@ export class TuiProcess {
   private readonly executable: string
   private readonly remoteAddress: string
   private readonly tokenEnvironmentName: string
+  private readonly codexArgsPrefix: string[]
   private readonly tuiArgs: string[]
   private readonly environment: NodeJS.ProcessEnv
   private child: ChildProcess | null = null
@@ -42,6 +44,7 @@ export class TuiProcess {
     this.executable = options.executable
     this.remoteAddress = options.remoteAddress
     this.tokenEnvironmentName = options.tokenEnvironmentName
+    this.codexArgsPrefix = [...options.codexArgsPrefix ?? []]
     this.tuiArgs = [...options.tuiArgs]
     this.environment = { ...options.environment ?? process.env }
     delete this.environment[this.tokenEnvironmentName]
@@ -61,6 +64,7 @@ export class TuiProcess {
     const token = this.token
     if (!token) throw new Error("TUI capability token 不可用")
     const args = [
+      ...this.codexArgsPrefix,
       "--remote",
       this.remoteAddress,
       "--remote-auth-token-env",
