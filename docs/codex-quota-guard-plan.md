@@ -2913,11 +2913,11 @@ rg -n "accessToken|refreshToken|Authorization: Bearer|cookie=" tools/codex-quota
 
 预期：改动只在设计允许范围；搜索结果只出现脱敏规则或测试假值，不出现真实认证材料。逐条审查代理请求、响应、通知、server request、审批、未知字段、Guard ID、active target、DORMANT、HANDLED 和 cleanup 的直接测试证据。
 
-- [ ] **步骤 8：推送最终功能分支并等待三平台 CI**
+- [x] **步骤 8：推送最终功能分支并等待三平台 CI**
 
 提交本计划末尾的实际验收记录并推送 `codex-quota-guard` 分支。查询最终 HEAD 对应的 `Codex Quota Guard` workflow；macOS、Ubuntu、Windows 三个 job 必须全部成功，且每个 job 都运行完整测试与 pack。不能用旧 SHA 或本机测试替代远端平台证据。
 
-- [ ] **步骤 9：执行逐项完成审计**
+- [x] **步骤 9：执行逐项完成审计**
 
 按下方覆盖矩阵为每个要求记录文件、测试、命令、真实无模型验收或 CI 证据。任何条目缺证据、结果间接、真实配置被修改、资源残留或某平台失败，都继续修复，不得把 Goal 标记为 complete。
 
@@ -2988,14 +2988,16 @@ git commit -m "docs: 记录默认 Codex 终端启动器验收结果"
 
 ### 本地质量门与发布包
 
-- 验收代码 HEAD：`bd466e3aa1e8d739f9790a9125e5bae0fcea0862`。
+- 最终功能代码验收 HEAD：`4647cf9213428fdd5afcd05140f445e3ee1a1367`。
 - `npm ci --ignore-scripts --cache /private/tmp/codex-quota-guard-npm-cache`：退出码 0，安装 50 个包，漏洞数 0。
-- `npm test`：退出码 0，29 个测试文件、302 项测试全部通过；全部自动测试使用 fake transport/fake Codex，没有真实模型 turn。
+- `npm test`：退出码 0，29 个测试文件、303 项测试全部通过；Windows 仅跳过无有效权限位语义的 Unix 权限测试、POSIX `PATH` 夹具和既有平台专属路由测试，原生 PowerShell、分号 `PATH`、`.cmd` shim、子进程退出与 loopback 流程均有 Windows runner 直接证据；全部自动测试使用 fake transport/fake Codex，没有真实模型 turn。
 - `npm run typecheck`、`npm run format:check`、`npm run build`、`npm ls --depth=0`、`npm pack --dry-run`、`git diff --check`：退出码均为 0。
-- 发布包：`/private/tmp/cqg-0.3-release-pack-20260713/codex-quota-guard-0.3.0.tgz`；SHA-256 为 `3c08a8ee0f7c958981533afe0c333244eaf8161f2ae4f7ffcb6e3858ebacdf32`；47 个发布文件，只含构建产物、README、CHANGELOG、发布清单、包元数据与 `ws` 运行时依赖声明。
-- tarball 隔离安装：`/private/tmp/cqg-0.3-release-prefix-20260713`；npm 安装只创建 `codex-quota-guard` 包入口，没有自动创建 `codex`、`codex-raw`、profile 块或 Guard 全局配置。
+- 最终功能代码发布包：`/private/tmp/cqg-0.3-final-pack-20260713-4647cf9/codex-quota-guard-0.3.0.tgz`；SHA-256 为 `3b6e8ca5f2a7bc2539568cde448877c1eb22627dba7a0cf69b2372bc231ec486`；47 个发布文件，只含构建产物、README、CHANGELOG、发布清单、包元数据与 `ws` 运行时依赖声明。安装到 `/private/tmp/cqg-0.3-final-prefix-20260713-4647cf9` 后，受支持的 `--help` 与包元数据版本 `0.3.0` 均验证成功。
+- tarball 隔离安装：`/private/tmp/cqg-0.3-final-prefix-20260713-4647cf9`；npm 安装只创建 `codex-quota-guard` 包入口，没有自动创建 `codex`、`codex-raw`、profile 块或 Guard 全局配置。
 
-### 最终 tarball 的临时 zsh 验收
+### macOS 行为等价候选 tarball 的临时 zsh 验收
+
+完整 TTY 安装/卸载事务使用修复前候选 tarball 执行；此后唯一生产代码差异是把非 Windows profile 从宿主 `path.join` 明确为 `path.posix.join`，二者在 macOS 上结果相同。最终功能代码 tarball 已按上节重新打包、隔离安装并验证帮助与版本，最终 Windows 安装路径行为由三平台 CI 直接验证。
 
 - 临时 HOME：`/private/tmp/cqg-shell-release-home-20260713`；安装前 `.zshrc` 与 `.bash_profile` 均不存在。
 - `shell install` 在真实 zsh TTY 中列出影响文件，精确输入 `INSTALL` 后退出码 0；`shell status --json` 返回 `already-installed`、`healthy: true`、`issues: []`。
@@ -3020,4 +3022,6 @@ git commit -m "docs: 记录默认 Codex 终端启动器验收结果"
 - `git diff 1167217..HEAD --name-only` 仅包含 `tools/codex-quota-guard/**`、专属 `.github/workflows/codex-quota-guard.yml`、本计划和已获确认的同主题设计文档；没有业务源码、根 package、根 TypeScript/Vitest 配置或无关文档改动。
 - 敏感词审计命中仅为脱敏规则、fake transport 和测试假值；没有真实 token、cookie 或认证头。
 - 300 分钟唯一保护窗口、2% 下降沿、同 key 一次、HANDLED 后放行、weekly 永不触发、DORMANT + ALLOWED、重复 updated、固定 active turn、App Server 崩溃、持久状态、Goal 降级、loopback token、双向 server request、审批、未知字段、路由和清理均有直接单元或 fake E2E 证据。
-- CI 入口：[用户 fork 的 Codex Quota Guard workflow](https://github.com/nan-doctor/llm_wiki/actions/workflows/codex-quota-guard.yml?query=branch%3Acodex-quota-guard)。向 `myfork`（`https://github.com/nan-doctor/llm_wiki.git`）推送被安全审查要求取得对该具体目的地的显式授权，因此三平台 CI 和任务十四步骤 8、9 暂未完成；不得用本机结果替代。
+- 用户明确授权后已向 `myfork`（`https://github.com/nan-doctor/llm_wiki.git`）推送 `codex-quota-guard` 分支。最终功能代码 HEAD `4647cf9213428fdd5afcd05140f445e3ee1a1367` 对应的 [Codex Quota Guard 运行 #29248875100](https://github.com/nan-doctor/llm_wiki/actions/runs/29248875100) 全部通过：macOS、Ubuntu、Windows 三个 job 均完成 `npm ci --ignore-scripts`、依赖树、格式、类型、303 项测试、构建和 `npm pack --dry-run`。
+- 首轮 Windows 失败揭示了宿主路径规则、Unix 权限位和子进程信号回调的测试边界；实现已明确对非 Windows profile 使用 POSIX 路径，测试改为由父进程观测子进程实际退出。第二轮把剩余差异收敛到 fake App Server 的 `SIGTERM` 回调，最终同样改用父进程 `stop()` 完成事件验证；没有用重跑掩盖失败。
+- `git diff 1167217..HEAD --name-only` 仍只包含独立工具、专属 workflow、本计划和已确认的同主题设计文档；`git diff --check` 通过，敏感词命中全部为脱敏规则或测试假值。功能代码提交与远端在审计时为 `0 0` 同步。为避免“记录 CI 结果”产生无限验收提交链，本验收记录提交本身的最终三平台结果保留在任务完成报告中。
