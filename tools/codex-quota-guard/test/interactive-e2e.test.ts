@@ -43,6 +43,24 @@ interface E2eResult {
   endpointDirectory: string | null
 }
 
+class TrackedRawAppServerProcess extends RawAppServerProcess {
+  constructor(
+    options: ConstructorParameters<typeof RawAppServerProcess>[0],
+    private readonly transcriptPath: string,
+  ) {
+    super(options)
+  }
+
+  override async stop(): Promise<void> {
+    await super.stop()
+    appendFileSync(
+      this.transcriptPath,
+      `${JSON.stringify({ event: "app-server-process-stopped" })}\n`,
+      "utf8",
+    )
+  }
+}
+
 const roots: string[] = []
 const fakeCodex = fileURLToPath(new URL("./fakes/fake-codex.mjs", import.meta.url))
 
@@ -132,7 +150,9 @@ describe("默认终端代理 fake 端到端", () => {
     expect(result.exitCode).toBe(130)
     expect(result.transcript.some((entry) => entry.event === "tui-process-exit"))
       .toBe(true)
-    expect(result.transcript.some((entry) => entry.event === "app-server-stop")).toBe(true)
+    expect(result.transcript.some((entry) => (
+      entry.event === "app-server-process-stopped"
+    ))).toBe(true)
     expect(result.transcript.some((entry) => (
       entry.method === "thread/backgroundTerminals/clean"
     ))).toBe(true)
@@ -160,12 +180,12 @@ async function runFakeInteractive(
   const reporter = new LocalThresholdReporter(root, {
     inspectGit: async () => "## fake-git\n M fake-file",
   })
-  const raw = new RawAppServerProcess({
+  const raw = new TrackedRawAppServerProcess({
     codexPath: process.execPath,
     codexArgsPrefix: [fakeCodex],
     enableGoals: true,
     environment,
-  })
+  }, transcriptPath)
   let endpointDirectory: string | null = null
   const generation = randomUUID()
   const signalSource = new EventEmitter()
