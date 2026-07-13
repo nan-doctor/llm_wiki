@@ -56,6 +56,8 @@ export interface InteractiveSessionDependencies {
   signalSource: Pick<EventEmitter, "on" | "off">
 }
 
+const TUI_DISCONNECT_GRACE_MS = 250
+
 interface Termination {
   code: number
   reason: string
@@ -75,6 +77,7 @@ export class InteractiveSession {
   private stopPromise: Promise<void> | null = null
   private terminationPromise: Promise<Termination> | null = null
   private finishTermination: ((termination: Termination) => void) | null = null
+  private tuiDisconnectPromise: Promise<void> | null = null
   private readonly listeners: Array<{
     emitter: Pick<EventEmitter, "off">
     event: string
@@ -97,9 +100,17 @@ export class InteractiveSession {
       this.rawStarted = true
       this.token = this.dependencies.createToken()
       this.endpoint = await this.dependencies.createEndpoint(this.token)
-      this.listen(this.endpoint, "close", () => this.terminate(1, "TUI endpoint 已断开"))
+      this.listen(this.endpoint, "close", () => {
+        this.reconcileTuiDisconnect("TUI endpoint 已断开")
+      })
       this.proxy = this.dependencies.createProxy(this.endpoint, this.dependencies.raw)
-      this.listen(this.proxy, "exit", () => this.terminate(1, "JSON-RPC 代理已退出"))
+      this.listen(this.proxy, "exit", (error: unknown) => {
+        if (error instanceof Error && error.message === "TUI 已断开") {
+          this.reconcileTuiDisconnect("JSON-RPC 代理检测到 TUI 断开")
+        } else {
+          this.terminate(1, "JSON-RPC 代理已退出")
+        }
+      })
       this.listen(this.proxy, "error", () => this.terminate(1, "JSON-RPC 代理异常"))
       this.controller = this.dependencies.createController(this.proxy)
       this.tui = this.dependencies.createTui({
@@ -152,9 +163,24 @@ export class InteractiveSession {
   }
 
   private initializeTermination(): void {
+    this.tuiDisconnectPromise = null
     this.terminationPromise = new Promise((resolve) => {
       this.finishTermination = resolve
     })
+  }
+
+  private reconcileTuiDisconnect(reason: string): void {
+    if (this.tuiDisconnectPromise) return
+    const tui = this.tui
+    if (!tui) {
+      this.terminate(1, reason)
+      return
+    }
+    this.tuiDisconnectPromise = (async () => {
+      const exit = await waitForTuiExit(tui, TUI_DISCONNECT_GRACE_MS)
+      if (exit) this.terminate(exitCode(exit), "原生 TUI 已退出")
+      else this.terminate(1, reason)
+    })()
   }
 
   private terminate(code: number, reason: string): void {
@@ -199,5 +225,25 @@ async function attempt(action: () => void | Promise<void>): Promise<void> {
     await action()
   } catch {
     // 清理路径继续处理其余本会话资源。
+  }
+}
+
+async function waitForTuiExit(
+  tui: SessionTui,
+  timeoutMs: number,
+): Promise<TuiExit | null> {
+  let timeout: NodeJS.Timeout | null = null
+  try {
+    return await Promise.race([
+      tui.waitForExit(),
+      new Promise<null>((resolve) => {
+        timeout = setTimeout(() => resolve(null), timeoutMs)
+        timeout.unref()
+      }),
+    ])
+  } catch {
+    return null
+  } finally {
+    if (timeout) clearTimeout(timeout)
   }
 }

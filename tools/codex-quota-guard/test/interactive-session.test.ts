@@ -366,6 +366,18 @@ function sessionHarness(trigger: "normal" | "crash" | "sigint" | "sighup" | "raw
 }
 
 describe("InteractiveSession", () => {
+  it("TUI 正常退出前 WebSocket 先关闭时以进程退出码为准", async () => {
+    const test = sessionHarness("endpoint")
+    const originalStart = test.tui.start.bind(test.tui)
+    test.tui.start = async () => {
+      await originalStart()
+      queueMicrotask(() => test.tui.exited.resolve({ code: 0, signal: null }))
+    }
+    const session = new InteractiveSession(test.dependencies)
+
+    await expect(session.run({ tuiArgs: [], requireProtection: false })).resolves.toBe(0)
+  })
+
   it("等待 controller 确认握手订阅后才启动 TUI", async () => {
     const test = sessionHarness("normal")
     let subscribed = false

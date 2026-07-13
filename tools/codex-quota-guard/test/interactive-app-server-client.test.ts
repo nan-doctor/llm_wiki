@@ -131,11 +131,17 @@ describe("InteractiveAppServerClient", () => {
     const proxy = new FakeInteractiveProxy()
     const client = createClient(proxy)
     const start = client.start()
+    const diagnostics: string[] = []
+    client.on("diagnostic", (message) => diagnostics.push(message))
 
-    proxy.emit("exit", new Error("App Server 崩溃"))
+    proxy.emit("exit", new Error("App Server 崩溃 Authorization: Bearer secret"))
 
     await expect(start).rejects.toThrow("App Server 崩溃")
     expect(proxy.turnGateOpened).toBe(false)
+    expect(diagnostics).toEqual([
+      expect.stringContaining("App Server/交互代理已退出"),
+    ])
+    expect(diagnostics.join("\n")).not.toContain("secret")
     await client.stop()
   })
 

@@ -168,6 +168,9 @@ export class InteractiveAppServerClient extends EventEmitter
   private readonly onProxyExit = (error: Error | null): void => {
     const reason = error ?? new Error("交互代理已断开")
     this.rejectInitializedWait(reason)
+    this.emit("diagnostic", sanitizeDiagnostic(
+      `App Server/交互代理已退出：${reason.message}`,
+    ))
     this.emit("exit", reason)
   }
 
