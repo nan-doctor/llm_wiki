@@ -147,6 +147,18 @@ describe("executeCli", () => {
     })
   })
 
+  it("控制器锁失败也包含运行环境影响诊断", async () => {
+    const test = setup()
+    test.dependencies.acquireLock = async () => {
+      throw new Error("已有控制器")
+    }
+
+    const failure = executeCli(["status"], test.dependencies)
+    await expect(failure).rejects.toThrow("当前 Codex：/real/selected/codex")
+    await expect(failure).rejects.toThrow("原因：已有控制器")
+    await expect(failure).rejects.toThrow("--codex-path <绝对路径>")
+  })
+
   it("run 只启动一个 turn 并等待完成", async () => {
     const test = setup()
 
@@ -162,8 +174,13 @@ describe("executeCli", () => {
     test.state.errors.push("turn 失败：交互式审批请求不受支持")
     test.controller.waitForTurn = async () => "failed"
 
-    await expect(executeCli(["run", "执行失败任务"], test.dependencies))
-      .rejects.toThrow("turn 执行失败：交互式审批请求不受支持")
+    const failure = executeCli(["run", "执行失败任务"], test.dependencies)
+    await expect(failure).rejects.toThrow("turn 执行失败：交互式审批请求不受支持")
+    await expect(failure).rejects.toThrow("当前 Codex：/real/selected/codex")
+    await expect(failure).rejects.toThrow("额度读取影响：")
+    await expect(failure).rejects.toThrow("精确 turn interrupt 影响：")
+    await expect(failure).rejects.toThrow("Goal 控制影响：")
+    await expect(failure).rejects.toThrow("--codex-path <绝对路径>")
     expect(test.calls).toContain("stop")
     expect(test.calls).toContain("release")
   })
@@ -182,6 +199,20 @@ describe("executeCli", () => {
       executableSelectionSource: "path",
       protocolFingerprint: "fingerprint",
     })
+  })
+
+  it("doctor 异常包含所选 Codex 与三类影响诊断", async () => {
+    const test = setup()
+    test.dependencies.runDoctor = async () => {
+      throw new Error("handshake authorization=Basic secret-doctor")
+    }
+
+    const failure = executeCli(["doctor"], test.dependencies)
+    await expect(failure).rejects.toThrow("当前 Codex：/real/selected/codex")
+    await expect(failure).rejects.toThrow("额度读取影响：")
+    await expect(failure).rejects.toThrow("精确 turn interrupt 影响：")
+    await expect(failure).rejects.toThrow("Goal 控制影响：")
+    await expect(failure).rejects.not.toThrow("secret-doctor")
   })
 
   it("doctor 文本逐项显示协议能力矩阵", async () => {

@@ -2,6 +2,7 @@ import type { DoctorResult } from "./doctor.js"
 import type { ResumeOptions, RunOptions, StartedTurn } from "./guard/controller.js"
 import type { PersistedGuardState, TurnAdmission } from "./guard/state-machine.js"
 import { parseCliArgs } from "./cli-args.js"
+import { sanitizeDiagnostic } from "./persistence/state-store.js"
 import type { RuntimeContext } from "./runtime/runtime-context.js"
 import { buildStatusOutput, formatStatusText } from "./ui/status.js"
 
@@ -43,15 +44,31 @@ export async function executeCli(
     }
     const context = await dependencies.resolveRuntimeContext(parsed.codexPath)
     assertLaunchAllowed(context)
-    const result = await dependencies.runDoctor(context, parsed.liveCanary)
+    let result: DoctorResult
+    try {
+      result = await dependencies.runDoctor(context, parsed.liveCanary)
+    } catch (error) {
+      throw contextualRuntimeError(error, context)
+    }
     dependencies.writeOutput(parsed.json ? JSON.stringify(result, null, 2) : formatDoctor(result))
     return result.ok ? 0 : 1
   }
 
   const context = await dependencies.resolveRuntimeContext(parsed.codexPath)
   assertLaunchAllowed(context)
-  const lock = await dependencies.acquireLock()
-  const controller = dependencies.createController(context)
+  let lock: Awaited<ReturnType<CliDependencies["acquireLock"]>>
+  try {
+    lock = await dependencies.acquireLock()
+  } catch (error) {
+    throw contextualRuntimeError(error, context)
+  }
+  let controller: CliController
+  try {
+    controller = dependencies.createController(context)
+  } catch (error) {
+    await lock.release()
+    throw contextualRuntimeError(error, context)
+  }
   let polling: NodeJS.Timeout | null = null
   try {
     await controller.start()
@@ -101,11 +118,34 @@ export async function executeCli(
     }
     writeStatus(controller, parsed.json, dependencies, context)
     return 0
+  } catch (error) {
+    throw contextualRuntimeError(error, context, controller.status().state)
   } finally {
     if (polling) clearInterval(polling)
     await controller.stop()
     await lock.release()
   }
+}
+
+function contextualRuntimeError(
+  error: unknown,
+  context: RuntimeContext,
+  state?: PersistedGuardState,
+): Error {
+  const reason = sanitizeDiagnostic(error instanceof Error ? error.message : String(error))
+  const executable = context.executable.codexExecutableRealPath
+    ?? context.executable.codexExecutable
+  const rateLimitsImpact = state?.quota
+    ? "已取得额度快照；本错误不表示额度读取失效"
+    : "本次失败前未取得可信额度快照或尚未完成验证"
+  return new Error([
+    `当前 Codex：${executable}`,
+    `原因：${reason}`,
+    `额度读取影响：${rateLimitsImpact}`,
+    `精确 turn interrupt 影响：当前能力=${context.capabilityMatrix.turnInterrupt.status}；本错误不自动否定该能力`,
+    `Goal 控制影响：goalControl=${state?.goalControl ?? context.capabilityMatrix.goalPaused.status}`,
+    "修正：可使用 --codex-path <绝对路径> 明确选择兼容的 Codex",
+  ].join("；"))
 }
 
 function assertLaunchAllowed(context: RuntimeContext): void {
