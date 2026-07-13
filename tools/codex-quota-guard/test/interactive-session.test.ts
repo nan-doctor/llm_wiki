@@ -257,7 +257,7 @@ class OrderedRaw extends EventEmitter {
 }
 
 class OrderedEndpoint extends EventEmitter {
-  readonly address = "unix:///tmp/fake.sock"
+  readonly address = "ws://127.0.0.1:43123"
   closeCount = 0
   stopCount = 0
   constructor(private readonly order: string[]) { super() }
@@ -380,6 +380,18 @@ describe("InteractiveSession", () => {
     await expect(session.run({ tuiArgs: [], requireProtection: false })).resolves.toBe(0)
   })
 
+  it("TUI 下游先关闭但原生进程稍后正常退出时仍保留正常退出码", async () => {
+    const test = sessionHarness("endpoint")
+    const originalStart = test.tui.start.bind(test.tui)
+    test.tui.start = async () => {
+      await originalStart()
+      setTimeout(() => test.tui.exited.resolve({ code: 0, signal: null }), 1_500)
+    }
+    const session = new InteractiveSession(test.dependencies)
+
+    await expect(session.run({ tuiArgs: [], requireProtection: false })).resolves.toBe(0)
+  })
+
   it("等待 controller 确认握手订阅后才启动 TUI", async () => {
     const test = sessionHarness("normal")
     let subscribed = false
@@ -429,7 +441,7 @@ describe("InteractiveSession", () => {
       "endpoint:stop",
     ])
     expect(test.capturedTuiOptions()).toEqual({
-      remoteAddress: "unix:///tmp/fake.sock",
+      remoteAddress: "ws://127.0.0.1:43123",
       tokenEnvironmentName: "CODEX_QUOTA_GUARD_REMOTE_TOKEN",
       token: "session-secret",
       tuiArgs: ["--model", "gpt-test"],

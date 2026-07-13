@@ -505,10 +505,10 @@ describe("executeCli", () => {
     const test = setup()
     test.enableShell({ savedVersion: "codex-cli old" })
     test.runtimeContext.executable.codexVersion = "codex-cli new"
-    test.runtimeContext.remoteCapabilities.remoteUnixSocket = false
+    test.runtimeContext.remoteCapabilities.remoteLoopbackWebSocket = false
 
     await expect(executeCli(["__shim", "codex"], test.dependencies))
-      .rejects.toThrow("remoteUnixSocket")
+      .rejects.toThrow("remoteLoopbackWebSocket")
 
     expect(test.getGlobalConfig().realCodexVersion).toBe("codex-cli old")
     expect(test.calls).not.toContain("interactive:create")
@@ -558,8 +558,8 @@ describe("executeCli", () => {
   })
 
   it.each([
-    ["darwin", "remoteUnixSocket"],
-    ["linux", "remoteUnixSocket"],
+    ["darwin", "remoteLoopbackWebSocket"],
+    ["linux", "remoteLoopbackWebSocket"],
     ["win32", "remoteLoopbackWebSocket"],
     ["darwin", "remoteTui"],
     ["darwin", "remoteAuthTokenEnv"],
@@ -574,6 +574,14 @@ describe("executeCli", () => {
     await expect(executeCli(["interactive"], test.dependencies))
       .rejects.toThrow("codex-guarded")
     expect(test.calls).not.toContain("interactive:create")
+  })
+
+  it("Unix 平台不再把不兼容 token 的 Unix socket 作为交互准入条件", async () => {
+    const test = setup()
+    test.dependencies.platform = "darwin"
+    test.runtimeContext.remoteCapabilities.remoteUnixSocket = false
+
+    await expect(executeCli(["interactive"], test.dependencies)).resolves.toBe(7)
   })
 
   it("live canary 缺少确认变量时在启动 App Server 前拒绝", async () => {

@@ -86,7 +86,7 @@ Codex Quota Guard 透明 JSON-RPC 代理与任务控制器
 真实 codex app-server
 ```
 
-Guard 是真实 App Server 的唯一客户端。代理原样转发请求、响应、通知、App Server 主动请求、审批和未知协议字段；Guard 注入请求使用独立 ID 命名空间。macOS/Linux endpoint 位于权限受限的随机临时 Unix socket，Windows 只监听 `127.0.0.1` 的随机端口。随机 token 只通过临时环境变量交给本次 TUI，不进入命令行、状态、报告、配置或上游 App Server 环境；退出后 socket、临时目录和内存 token 都会清理。
+Guard 是真实 App Server 的唯一客户端。代理原样转发请求、响应、通知、App Server 主动请求、审批和未知协议字段；Guard 注入请求使用独立 ID 命名空间。所有平台的 endpoint 都只监听 `127.0.0.1` 的随机端口，并拒绝错误 token 和第二个客户端。当前 Codex 明确禁止把 `--remote-auth-token-env` 与 `unix://` 组合，因此不能在保留认证的同时使用 Unix socket。随机 token 只通过临时环境变量交给本次 TUI，不进入命令行、状态、报告、配置、token 文件或上游 App Server 环境；退出后监听端口和内存 token 都会清理。
 
 查看安装完整性或卸载：
 
@@ -288,7 +288,7 @@ npm test
 npm run build
 ```
 
-所有自动化测试均使用 fake App Server transport 和 fake remote TUI。`npm test` 不启动真实 Codex，不访问真实账户，也不调用真实模型 `turn/start`。端到端测试虽然穿透真实 stdio、Unix socket/loopback WebSocket、代理和子进程清理，但发送的是空 fake turn，额度、审批和通知全部由本地脚本产生。
+所有自动化测试均使用 fake App Server transport 和 fake remote TUI。`npm test` 不启动真实 Codex，不访问真实账户，也不调用真实模型 `turn/start`。端到端测试虽然穿透真实 stdio、loopback WebSocket、代理和子进程清理，但发送的是空 fake turn，额度、审批和通知全部由本地脚本产生。
 
 仓库 CI 在 macOS、Linux 和 Windows 上使用 Node.js 20.19 运行安装、依赖树、格式、类型、全部 fake transport 测试、构建和打包检查。子进程测试会通过 `process.execPath` 启动含空格路径中的 fake App Server；进程锁和原子状态写入测试使用各平台系统临时目录。Linux 和 Windows CI 证明跨平台 resolver 与控制逻辑，不证明当地存在真实 ChatGPT 登录或额度窗口；真实 App Server 兼容性由 macOS 上的普通 doctor 安全探测记录。
 

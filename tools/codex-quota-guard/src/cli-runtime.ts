@@ -514,13 +514,13 @@ export function assertInteractiveCapabilities(
   context: RuntimeContext,
   platform: NodeJS.Platform,
 ): void {
+  void platform
   const remote = context.remoteCapabilities
   const required: Array<[boolean, string]> = [
     [remote.remoteTui, "remoteTui"],
     [remote.remoteAuthTokenEnv, "remoteAuthTokenEnv"],
     [remote.appServerStdio, "appServerStdio"],
-    [platform === "win32" ? remote.remoteLoopbackWebSocket : remote.remoteUnixSocket,
-      platform === "win32" ? "remoteLoopbackWebSocket" : "remoteUnixSocket"],
+    [remote.remoteLoopbackWebSocket, "remoteLoopbackWebSocket"],
     [context.schemaCapabilities.rateLimitsRead, "account/rateLimits/read"],
     [context.schemaCapabilities.rateLimitsUpdated, "account/rateLimits/updated"],
     [context.schemaCapabilities.turnStart, "turn/start"],

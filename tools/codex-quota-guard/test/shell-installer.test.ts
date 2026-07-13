@@ -426,9 +426,9 @@ describe("ShellInstaller", () => {
   it("缺少 remote 能力时在确认和写入前拒绝", async () => {
     const test = await harness()
     const incompatible = context(test.codexPath)
-    incompatible.remoteCapabilities.remoteUnixSocket = false
+    incompatible.remoteCapabilities.remoteLoopbackWebSocket = false
 
-    await expect(test.installer.install(incompatible)).rejects.toThrow("remoteUnixSocket")
+    await expect(test.installer.install(incompatible)).rejects.toThrow("remoteLoopbackWebSocket")
 
     expect((await test.globalStore.load()).shellIntegration.enabled).toBe(false)
     expect(test.output).toEqual([])

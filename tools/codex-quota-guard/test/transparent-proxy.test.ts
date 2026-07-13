@@ -180,4 +180,26 @@ describe("TransparentJsonRpcProxy", () => {
     await expect(interrupt).resolves.toEqual({})
     test.proxy.stop()
   })
+
+  it("TUI 下游断开后保留上游供 Guard 清理直到会话显式停止", async () => {
+    const test = setup()
+    const disconnects: Error[] = []
+    test.proxy.on("tuiDisconnect", (error: Error) => disconnects.push(error))
+
+    test.downstream.emit("close")
+
+    expect(disconnects).toHaveLength(1)
+    expect(disconnects[0]?.message).toContain("TUI 已断开")
+    test.downstream.emitMessage({ id: 1, method: "turn/start" })
+    expect(test.upstream.sent).toHaveLength(0)
+
+    const clean = test.proxy.request("thread/backgroundTerminals/clean", {
+      threadId: "thread-1",
+    })
+    const request = test.upstream.sent.at(-1)!
+    test.upstream.emitMessage({ id: request.id, result: {} })
+
+    await expect(clean).resolves.toEqual({})
+    test.proxy.stop()
+  })
 })

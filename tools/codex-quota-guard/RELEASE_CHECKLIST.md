@@ -48,11 +48,12 @@
 
 - [ ] TUI 请求、响应、通知、App Server 主动请求、审批、未知方法和扩展字段双向保真。
 - [ ] Guard ID 与 TUI 数字/字符串 ID 不冲突，未知响应不会误配。
-- [ ] macOS/Linux 使用权限受限 Unix socket；Windows 只监听 `127.0.0.1`。
+- [ ] macOS、Linux 和 Windows 都只监听 `127.0.0.1` 随机端口；错误 token 与第二个客户端被拒绝。
+- [ ] 验证当前 Codex 的认证参数只与 `wss://` 或 loopback `ws://` 兼容，未通过取消 token 退化到 Unix socket。
 - [ ] capability token 不在命令行、日志、状态、报告、配置、token 文件或上游环境中。
 - [ ] fake edge 只中断 first turn，second turn 放行；重复 updated 不重复中断。
 - [ ] fake weekly-only 保持 `DORMANT + ALLOWED` 且中断数为零。
-- [ ] TUI 正常退出、TUI 断线、App Server 崩溃和 `SIGINT` 均清理 socket、TUI 和 App Server。
+- [ ] TUI 正常退出、TUI 断线、App Server 崩溃和 `SIGINT` 均清理监听端口、TUI 和 App Server。
 
 ## 行为回归
 
@@ -71,5 +72,5 @@
 - [ ] 记录 ChatGPT 应用内置 Codex 的同等普通 doctor 结果。
 - [ ] 记录所有未验证的真实运行假设和限制。
 - [ ] 完成真实 Codex 无模型 remote TUI 首屏验收：不输入 prompt、不执行 slash command、不启动 turn。
-- [ ] 验收后 `config.toml` 哈希、App Server PID 集合和临时 socket/token 残留检查通过。
+- [ ] 验收后 `config.toml` 哈希、App Server PID 集合、loopback 监听和 token 文件残留检查通过。
 - [ ] 最终提交对应的 macOS、Ubuntu、Windows workflow 全部成功。

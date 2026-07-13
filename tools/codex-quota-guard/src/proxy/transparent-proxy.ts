@@ -159,8 +159,8 @@ export class TransparentJsonRpcProxy extends EventEmitter {
 
   private readonly onDownstreamClose = (): void => {
     const error = new Error("TUI 已断开")
-    this.emitEvent("exit", error)
-    this.stop(error)
+    this.pauseDownstream()
+    this.emitEvent("tuiDisconnect", error)
   }
 
   private readonly onUpstreamExit = (error: Error | null): void => {

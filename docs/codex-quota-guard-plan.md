@@ -1304,7 +1304,7 @@ ChatGPT 应用内置 Codex：
 
 **Architecture:** 原生 TUI 只连接随机本地 WebSocket endpoint，Quota Guard 是真实 stdio App Server 的唯一客户端，并在透明双向转发中观察额度、thread 和 turn 通知以及注入精确中断。全局配置、shell 安装和原始旁路位于现有项目级状态之外；交互会话通过现有 `GuardController` 和 `RuntimeContext` 复用额度、Goal、报告与 resolver 行为。
 
-**Tech Stack:** TypeScript、Node.js 20、Vitest、`ws`、Codex App Server JSON-RPC、stdio JSONL、Unix socket、Windows loopback WebSocket。
+**Tech Stack:** TypeScript、Node.js 20、Vitest、`ws`、Codex App Server JSON-RPC、stdio JSONL、全平台 loopback WebSocket。
 
 ---
 
@@ -1325,7 +1325,7 @@ ChatGPT 应用内置 Codex：
 - `src/proxy/json-rpc.ts`：宽松 JSON-RPC 消息、ID、错误和消息判别函数；不使用方法白名单。
 - `src/proxy/raw-app-server-process.ts`：真实 `codex app-server --listen stdio://` 的原始 JSONL 进程传输，不自行 initialize。
 - `src/proxy/transparent-proxy.ts`：TUI 请求 ID 映射、Guard ID 命名空间、双向 server request、未知消息透传和首个 turn 门控。
-- `src/proxy/local-tui-endpoint.ts`：Unix socket 或 `127.0.0.1` WebSocket、本地 capability token 校验和单客户端限制。
+- `src/proxy/local-tui-endpoint.ts`：只监听 `127.0.0.1` 随机端口的 WebSocket、本地 capability token 校验和单客户端限制。
 - `src/proxy/interactive-app-server-client.ts`：在 TUI 握手后向代理注入额度读取，监听额度更新，并实现 Guard 客户端接口。
 - `src/interactive/preflight.ts`：短生命周期 App Server 预检、状态输出和严格保护准入。
 - `src/interactive/tui-process.ts`：以真实绝对路径和受控参数启动原生 TUI，保留原终端输入输出。
@@ -1705,9 +1705,9 @@ npm install @types/ws@^8.18.1 --save-dev
 
 预期：只有独立工具的 `package.json` 和 `package-lock.json` 改变；`ws` 位于 `dependencies`，`@types/ws` 位于 `devDependencies`。
 
-- [ ] **步骤 2：写 Unix、loopback、token 和单客户端失败测试**
+- [ ] **步骤 2：写全平台 loopback、token 和单客户端失败测试**
 
-测试通过注入 `platform` 强制覆盖两种分支：
+测试通过注入 `platform` 覆盖 macOS、Linux 和 Windows：
 
 ```ts
 it("拒绝错误 token 和第二个客户端且不创建 token 文件", async () => {
@@ -1715,14 +1715,14 @@ it("拒绝错误 token 和第二个客户端且不创建 token 文件", async ()
   await expect(connect(endpoint.address, "wrong")).rejects.toThrow()
   const first = await connect(endpoint.address, "secret")
   await expect(connect(endpoint.address, "secret")).rejects.toThrow()
-  expect(await readdir(endpoint.temporaryDirectory)).not.toContain("token")
+  expect(endpoint.address).toMatch(/^ws:\/\/127\.0\.0\.1:\d+$/)
+  expect(endpoint.address).not.toContain("secret")
   first.close()
   await endpoint.stop()
-  await expect(stat(endpoint.temporaryDirectory)).rejects.toMatchObject({ code: "ENOENT" })
 })
 ```
 
-Windows 分支断言地址匹配 `ws://127.0.0.1:<随机端口>`，server address 不是 `0.0.0.0` 或 `::`。Unix 分支断言临时目录 `0700`、socket `0600`、remote 地址为 `unix://<绝对路径>`。
+所有平台都断言地址匹配 `ws://127.0.0.1:<随机端口>`，server address 不是 `0.0.0.0` 或 `::`，错误 token 返回 401，第二个客户端返回 409。当前 Codex 的 `--remote` 帮助明确规定 `--remote-auth-token-env` 只能与 `wss://` 或 loopback `ws://` 组合；为保留认证，macOS/Linux 不使用 `unix://`。
 
 - [ ] **步骤 3：运行测试并确认 endpoint 缺失**
 
@@ -1736,9 +1736,8 @@ Windows 分支断言地址匹配 `ws://127.0.0.1:<随机端口>`，server addres
 
 ```ts
 export interface LocalTuiEndpointOptions {
-  platform?: NodeJS.Platform
+  platform: NodeJS.Platform
   token: string
-  temporaryRoot?: string
 }
 
 export class LocalTuiEndpoint extends EventEmitter implements JsonRpcPeer {
@@ -1762,13 +1761,13 @@ function tokenMatches(header: string | undefined, expected: string): boolean {
 }
 ```
 
-token 只存在构造参数闭包和调用者内存；不得写文件、发出 diagnostic 或进入 endpoint 地址。`closeClient()` 只关闭当前 TUI WebSocket，`stop()` 再幂等关闭 HTTP server、删除 socket 和临时目录并移除监听器。
+token 只存在构造参数闭包和调用者内存；不得写文件、发出 diagnostic 或进入 endpoint 地址。`closeClient()` 只关闭当前 TUI WebSocket，`stop()` 再幂等关闭只监听 loopback 的 HTTP server 并移除监听器。`temporaryDirectory` 为兼容清理审计固定返回 `null`。
 
 - [ ] **步骤 5：运行 endpoint、安全和依赖检查并提交**
 
 运行：`npm test -- test/local-tui-endpoint.test.ts && npm run typecheck && npm ls --depth=0`
 
-预期：两种平台分支通过；依赖树只有声明的 `ws` 与开发依赖，没有未声明包。
+预期：三平台 loopback 行为通过；依赖树只有声明的 `ws` 与开发依赖，没有未声明包。
 
 ```bash
 git add tools/codex-quota-guard/package.json tools/codex-quota-guard/package-lock.json tools/codex-quota-guard/src/proxy/local-tui-endpoint.ts tools/codex-quota-guard/test/local-tui-endpoint.test.ts
@@ -2196,7 +2195,7 @@ expect(parseCliArgs([
 
 - [ ] **步骤 3：写运行时锁、退出码和严格配置失败测试**
 
-为 `CliDependencies` 注入 `createInteractiveSession`，断言运行上下文只构造一次、进程锁覆盖整个 session、TUI 退出码原样返回、异常仍释放锁。`interactive` 不调用现有 `controller.run()` 或 `resume()`。macOS/Linux 缺 `remoteUnixSocket`、Windows 缺 `remoteLoopbackWebSocket`，或任意平台缺 `remoteTui`、`remoteAuthTokenEnv`、`appServerStdio` 时，都在 shell 安装/TUI spawn 前拒绝并说明不接管默认 `codex`。
+为 `CliDependencies` 注入 `createInteractiveSession`，断言运行上下文只构造一次、进程锁覆盖整个 session、TUI 退出码原样返回、异常仍释放锁。`interactive` 不调用现有 `controller.run()` 或 `resume()`。任意平台缺 `remoteLoopbackWebSocket`、`remoteTui`、`remoteAuthTokenEnv` 或 `appServerStdio` 时，都在 shell 安装/TUI spawn 前拒绝并说明不接管默认 `codex`。`remoteUnixSocket` 仍作为协议诊断信息显示，但不是带 token 交互路径的准入条件。
 
 - [ ] **步骤 4：运行能力和 CLI 测试并确认缺失**
 
@@ -2688,7 +2687,7 @@ it("只中断边沿瞬间的 first turn 且 HANDLED 后放行 second turn", asyn
 
 - [ ] **步骤 4：写 weekly-only、断线和资源清理端到端测试**
 
-`weekly-only` 断言 `interrupts=[]`、`guard=DORMANT`、`turns=ALLOWED`、weekly 可见。`app-server-crash` 断言 TUI 被关闭、状态保存错误、会话非零退出且无重连到新进程。另在 session 单元测试触发 Ctrl-C，断言临时目录、Unix socket、token 文件、App Server 和 TUI 子进程均不存在。
+`weekly-only` 断言 `interrupts=[]`、`guard=DORMANT`、`turns=ALLOWED`、weekly 可见。`app-server-crash` 断言 TUI 被关闭、状态保存错误、会话非零退出且无重连到新进程。另在 session 单元测试触发 Ctrl-C，断言 loopback 监听、token 文件、App Server 和 TUI 子进程均不存在。
 
 - [ ] **步骤 5：运行端到端测试并确认 fake 流程失败**
 
@@ -2761,7 +2760,7 @@ npm install --package-lock-only --ignore-scripts --cache /private/tmp/codex-quot
 
 - [ ] **步骤 4：完整更新 README**
 
-README 必须包含：默认 `codex` 只是终端 shim、不会修改真实二进制或 `~/.codex/config.toml`；安装默认只修改当前 shell；安装前文件清单和确认；无参数打开原生 TUI、任务在 TUI 输入；额度提示词无需重复；单连接代理图；Unix socket/Windows loopback/token 边界；`codex-raw` 和 BYPASS；管理 allowlist、`exec` 拒绝、未知命令；config 命令；DORMANT + ALLOWED；quota/guard/turns 分离；严格模式；恢复 PATH；真实路径失效诊断；Codex App、IDE 和其他进程不受控；不记录 prompt/output/approval；无模型验收边界。
+README 必须包含：默认 `codex` 只是终端 shim、不会修改真实二进制或 `~/.codex/config.toml`；安装默认只修改当前 shell；安装前文件清单和确认；无参数打开原生 TUI、任务在 TUI 输入；额度提示词无需重复；单连接代理图；全平台 loopback/token 边界及不使用无 token Unix socket 的原因；`codex-raw` 和 BYPASS；管理 allowlist、`exec` 拒绝、未知命令；config 命令；DORMANT + ALLOWED；quota/guard/turns 分离；严格模式；恢复 PATH；真实路径失效诊断；Codex App、IDE 和其他进程不受控；不记录 prompt/output/approval；无模型验收边界。
 
 - [ ] **步骤 5：更新变更记录和发布清单**
 
@@ -2781,7 +2780,7 @@ npm run build
 npm pack --dry-run
 ```
 
-确认 `test/fakes/*.mjs` 在三平台使用 `process.execPath`，不依赖 shebang 或 Unix 执行权限；Windows 测试使用 loopback，Unix 测试使用 socket。
+确认 `test/fakes/*.mjs` 在三平台使用 `process.execPath`，不依赖 shebang 或 Unix 执行权限；三平台都使用带 token 的 loopback WebSocket。
 
 - [ ] **步骤 7：运行文档、打包和完整测试并提交**
 
@@ -2882,7 +2881,7 @@ test ! -e ~/.local/share/codex-quota-guard/shims/codex
 test ! -e ~/.local/share/codex-quota-guard/shims/codex-raw
 ```
 
-再执行一次 uninstall，预期返回“已卸载”。`.zshrc` 恢复原内容或原不存在状态；真实 Codex 哈希不变；无 shim、完整或残缺标记块、socket、token 文件或后台子进程。
+再执行一次 uninstall，预期返回“已卸载”。`.zshrc` 恢复原内容或原不存在状态；真实 Codex 哈希不变；无 shim、完整或残缺标记块、监听端口、token 文件或后台子进程。
 
 - [ ] **步骤 6：执行真实 Codex 无模型 remote TUI 验收**
 
@@ -2899,7 +2898,7 @@ pgrep -fl "codex app-server"
 codex-quota-guard interactive --codex-path "/Applications/ChatGPT.app/Contents/Resources/codex"
 ```
 
-只确认原生 TUI 首屏出现，立即按 Ctrl-C 退出。再次比较 `~/.codex/config.toml` 哈希和 App Server PID 集合，检查系统临时目录中没有 `codex-quota-guard-*` socket/token/目录。不得自动输入 prompt，不得执行真实 interrupt、Goal 或 live canary；如需任何真实 turn，必须另行取得用户明确许可。
+只确认原生 TUI 首屏出现，立即按 Ctrl-C 退出。再次比较 `~/.codex/config.toml` 哈希和 App Server PID 集合，确认没有 Guard loopback 监听、token 文件或后台子进程。不得自动输入 prompt，不得执行真实 interrupt、Goal 或 live canary；如需任何真实 turn，必须另行取得用户明确许可。
 
 - [ ] **步骤 7：执行范围、敏感信息和协议完成度审计**
 
@@ -2938,7 +2937,7 @@ git commit -m "docs: 记录默认 Codex 终端启动器验收结果"
 | 双向 server request、审批和用户输入 | 三、十二 | server request ID 冲突测试、fake 审批往返 |
 | Guard ID 与 TUI ID 不冲突 | 三 | 数字/字符串/同值三方向 ID 测试 |
 | 精确 active thread/turn 与旧 generation 隔离 | 六、十二 | controller 通知测试、旧事件不触及 second turn E2E |
-| Unix socket、Windows loopback、随机 endpoint、单客户端 | 四、十二 | endpoint 平台测试、三平台 CI |
+| 全平台 loopback、随机 endpoint、token、单客户端 | 四、十二、十四 | endpoint 平台测试、真实无模型首屏、三平台 CI |
 | token 不在命令行、日志、状态、报告、文件或上游环境 | 四、七、十二、十四 | endpoint/session/脱敏测试、范围与残留审计 |
 | Ctrl-C、TUI/App Server/代理崩溃清理 | 七、十二 | session fault matrix 与 E2E crash |
 | shell install/status/uninstall 当前 shell、确认、回滚、幂等 | 十、十四 | installer 事务测试、临时 HOME zsh 验收 |

@@ -1,6 +1,4 @@
 import { once } from "node:events"
-import { stat } from "node:fs/promises"
-import net from "node:net"
 import WebSocket from "ws"
 import { describe, expect, it } from "vitest"
 import type { JsonRpcMessage } from "../src/proxy/json-rpc.js"
@@ -11,13 +9,7 @@ async function connect(address: string, token: string): Promise<WebSocket> {
     headers: { Authorization: `Bearer ${token}` },
     handshakeTimeout: 1_000,
   }
-  let url = address
-  if (address.startsWith("unix://")) {
-    const socketPath = address.slice("unix://".length)
-    url = "ws://localhost/"
-    options.createConnection = () => net.createConnection(socketPath)
-  }
-  const client = new WebSocket(url, options)
+  const client = new WebSocket(address, options)
   return await new Promise((resolve, reject) => {
     client.once("open", () => resolve(client))
     client.once("error", reject)
@@ -36,18 +28,29 @@ async function closeClient(client: WebSocket): Promise<void> {
 }
 
 describe("LocalTuiEndpoint", () => {
-  it("Unix socket 使用受限权限、认证单客户端并完整清理", async () => {
+  it.each(["darwin", "linux"] as const)(
+    "%s 也使用带 token 的 loopback WebSocket",
+    async (platform) => {
+      const endpoint = await LocalTuiEndpoint.create({
+        platform,
+        token: "loopback-secret",
+      })
+
+      expect(endpoint.address).toMatch(/^ws:\/\/127\.0\.0\.1:\d+$/)
+      expect(endpoint.address).not.toContain("loopback-secret")
+      expect(endpoint.temporaryDirectory).toBeNull()
+      await endpoint.stop()
+    },
+  )
+
+  it("loopback endpoint 认证单客户端并透明传输消息", async () => {
     const endpoint = await LocalTuiEndpoint.create({
       platform: "darwin",
       token: "correct-secret",
-      temporaryRoot: "/tmp",
     })
-    const directory = endpoint.temporaryDirectory!
-    const socketPath = endpoint.address.slice("unix://".length)
 
-    expect(endpoint.address).toMatch(/^unix:\/\//)
-    expect((await stat(directory)).mode & 0o777).toBe(0o700)
-    expect((await stat(socketPath)).mode & 0o777).toBe(0o600)
+    expect(endpoint.address).toMatch(/^ws:\/\/127\.0\.0\.1:\d+$/)
+    expect(endpoint.temporaryDirectory).toBeNull()
     await expect(connect(endpoint.address, "wrong-secret")).rejects.toThrow("401")
 
     const client = await connect(endpoint.address, "correct-secret")
@@ -77,7 +80,6 @@ describe("LocalTuiEndpoint", () => {
 
     await closeClient(client)
     await endpoint.stop()
-    await expect(stat(directory)).rejects.toMatchObject({ code: "ENOENT" })
   })
 
   it("Windows 分支只监听 loopback 随机端口且 token 不进入地址", async () => {

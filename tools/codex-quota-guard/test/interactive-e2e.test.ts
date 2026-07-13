@@ -105,6 +105,10 @@ describe("默认终端代理 fake 端到端", () => {
     expect(result.state.quota?.protectedWindow).toBeNull()
     expect(result.state.quota?.primary?.windowDurationMins).toBe(10_080)
     expect(result.state.lastThresholdEvent).toBeNull()
+    expect(result.transcript.some((entry) => (
+      entry.method === "thread/backgroundTerminals/clean"
+    ))).toBe(true)
+    expect(result.state.errors.join("\n")).not.toContain("JSON-RPC 代理尚未启动")
     await expectPathMissing(result.endpointDirectory)
   })
 
@@ -119,12 +123,15 @@ describe("默认终端代理 fake 端到端", () => {
     await expectPathMissing(result.endpointDirectory)
   })
 
-  it("SIGINT 返回 130 并清理 TUI、App Server 与 socket", async () => {
+  it("SIGINT 返回 130 并清理 TUI、App Server 与 loopback endpoint", async () => {
     const result = await runFakeInteractive("weekly-only", { signal: "SIGINT" })
 
     expect(result.exitCode).toBe(130)
     expect(result.transcript.some((entry) => entry.event === "tui-closed")).toBe(true)
     expect(result.transcript.some((entry) => entry.event === "app-server-stop")).toBe(true)
+    expect(result.transcript.some((entry) => (
+      entry.method === "thread/backgroundTerminals/clean"
+    ))).toBe(true)
     expect(result.state.activeTurn).toBeNull()
     await expectPathMissing(result.endpointDirectory)
   })
@@ -166,7 +173,6 @@ async function runFakeInteractive(
       const endpoint = await LocalTuiEndpoint.create({
         platform: process.platform,
         token,
-        temporaryRoot: process.platform === "win32" ? undefined : "/tmp",
       })
       endpointDirectory = endpoint.temporaryDirectory
       return endpoint

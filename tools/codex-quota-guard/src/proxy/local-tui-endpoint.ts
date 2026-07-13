@@ -1,10 +1,7 @@
 import { createHash, timingSafeEqual } from "node:crypto"
 import { EventEmitter } from "node:events"
-import { chmod, mkdtemp, rm } from "node:fs/promises"
 import http, { type IncomingMessage } from "node:http"
 import type { Duplex } from "node:stream"
-import os from "node:os"
-import path from "node:path"
 import WebSocket, { WebSocketServer } from "ws"
 import { parseJsonRpcMessage, type JsonRpcMessage } from "./json-rpc.js"
 import type { JsonRpcPeer } from "./transparent-proxy.js"
@@ -12,7 +9,6 @@ import type { JsonRpcPeer } from "./transparent-proxy.js"
 export interface LocalTuiEndpointOptions {
   platform: NodeJS.Platform
   token: string
-  temporaryRoot?: string
 }
 
 export class LocalTuiEndpoint extends EventEmitter implements JsonRpcPeer {
@@ -23,7 +19,6 @@ export class LocalTuiEndpoint extends EventEmitter implements JsonRpcPeer {
   private readonly webSocketServer = new WebSocketServer({ noServer: true })
   private client: WebSocket | null = null
   private addressValue = ""
-  private temporaryDirectoryValue: string | null = null
   private token: string | null
   private stopPromise: Promise<void> | null = null
 
@@ -39,7 +34,7 @@ export class LocalTuiEndpoint extends EventEmitter implements JsonRpcPeer {
   }
 
   get temporaryDirectory(): string | null {
-    return this.temporaryDirectoryValue
+    return null
   }
 
   static async create(options: LocalTuiEndpointOptions): Promise<LocalTuiEndpoint> {
@@ -82,30 +77,13 @@ export class LocalTuiEndpoint extends EventEmitter implements JsonRpcPeer {
   }
 
   private async listen(): Promise<void> {
-    if (this.options.platform === "win32") {
-      await listen(this.server, 0, "127.0.0.1")
-      const address = this.server.address()
-      if (!address || typeof address === "string") {
-        throw new Error("无法确定本地 TUI endpoint 端口")
-      }
-      this.addressValue = `ws://127.0.0.1:${address.port}`
-      return
+    void this.options.platform
+    await listen(this.server, 0, "127.0.0.1")
+    const address = this.server.address()
+    if (!address || typeof address === "string") {
+      throw new Error("无法确定本地 TUI endpoint 端口")
     }
-
-    const root = this.options.temporaryRoot ?? os.tmpdir()
-    const directory = await mkdtemp(path.join(root, "cqg-"))
-    this.temporaryDirectoryValue = directory
-    await chmod(directory, 0o700)
-    const socketPath = path.join(directory, "app-server.sock")
-    try {
-      await listen(this.server, socketPath)
-      await chmod(socketPath, 0o600)
-      this.addressValue = `unix://${socketPath}`
-    } catch (error) {
-      await rm(directory, { recursive: true, force: true })
-      this.temporaryDirectoryValue = null
-      throw error
-    }
+    this.addressValue = `ws://127.0.0.1:${address.port}`
   }
 
   private readonly handleUpgrade = (
@@ -153,9 +131,6 @@ export class LocalTuiEndpoint extends EventEmitter implements JsonRpcPeer {
     this.webSocketServer.off("connection", this.handleConnection)
     await closeWebSocketServer(this.webSocketServer)
     await closeServer(this.server)
-    const directory = this.temporaryDirectoryValue
-    this.temporaryDirectoryValue = null
-    if (directory) await rm(directory, { recursive: true, force: true })
     this.token = null
     this.removeAllListeners()
   }

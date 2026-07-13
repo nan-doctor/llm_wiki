@@ -56,7 +56,7 @@ export interface InteractiveSessionDependencies {
   signalSource: Pick<EventEmitter, "on" | "off">
 }
 
-const TUI_DISCONNECT_GRACE_MS = 250
+const TUI_DISCONNECT_GRACE_MS = 3_000
 
 interface Termination {
   code: number
