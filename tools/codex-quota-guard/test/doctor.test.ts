@@ -189,7 +189,13 @@ describe("runLiveCanary", () => {
         await Promise.resolve()
         return { turn: { id: "turn-canary" } }
       })
-      connection.respond("turn/interrupt", {})
+      connection.respond("turn/interrupt", () => {
+        connection.emitNotification("turn/completed", {
+          threadId: "thread-canary",
+          turn: { id: "turn-canary", status: "interrupted" },
+        })
+        return {}
+      })
       connection.respond("thread/backgroundTerminals/clean", {})
     })
     const manager = new AppServerManager(factory.create, { reconnectDelaysMs: [0] })
@@ -205,6 +211,18 @@ describe("runLiveCanary", () => {
       turnId: "turn-canary",
       succeeded: true,
       errors: [],
+      audit: {
+        eventKind: "liveCanary",
+        activeTurnResolvedAt: expect.any(String),
+        interruptRequestedAt: expect.any(String),
+        interruptAcknowledgedAt: expect.any(String),
+        turnTerminalStateObservedAt: expect.any(String),
+        latencies: {
+          detectionToInterruptRequestMs: expect.any(Number),
+          interruptRequestToAcknowledgementMs: expect.any(Number),
+          interruptRequestToTerminalStateMs: expect.any(Number),
+        },
+      },
     })
     expect(canary.runtime).toMatchObject({
       turnStart: true,
@@ -359,12 +377,16 @@ describe("runLiveCanary", () => {
       })
       connection.respond("thread/goal/get", () => ({ goal }))
       connection.respond("turn/start", { turn: { id: "turn-response-id" } })
-      connection.respond("thread/read", {
+      let threadReads = 0
+      connection.respond("thread/read", () => ({
         thread: {
           id: "thread-reconcile",
-          turns: [{ id: "turn-runtime-id", status: "inProgress" }],
+          turns: [{
+            id: "turn-runtime-id",
+            status: threadReads++ === 0 ? "inProgress" : "interrupted",
+          }],
         },
-      })
+      }))
       connection.respond("turn/interrupt", {})
       connection.respond("thread/backgroundTerminals/clean", {})
     })
@@ -380,6 +402,13 @@ describe("runLiveCanary", () => {
       turnId: "turn-runtime-id",
       succeeded: true,
       errors: [],
+      audit: {
+        eventKind: "liveCanary",
+        turnTerminalStateObservedAt: expect.any(String),
+        latencies: {
+          interruptRequestToTerminalStateMs: expect.any(Number),
+        },
+      },
     })
     expect(factory.connections[0].requests.find((request) => (
       request.method === "turn/interrupt"

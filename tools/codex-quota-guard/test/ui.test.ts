@@ -1,8 +1,32 @@
 import { describe, expect, it } from "vitest"
 import { applyQuotaObservation, createInitialState } from "../src/guard/state-machine.js"
 import { normalizeRateLimits } from "../src/quota/normalize.js"
+import { buildCapabilityMatrix, emptyCapabilities } from "../src/runtime/capabilities.js"
+import type { RuntimeContext } from "../src/runtime/runtime-context.js"
 import { buildStatusOutput, formatStatusText } from "../src/ui/status.js"
 import { response, snapshot, window } from "./fixtures.js"
+
+function runtimeContext(): RuntimeContext {
+  const capabilities = emptyCapabilities()
+  capabilities.rateLimitsRead = true
+  capabilities.rateLimitsUpdated = true
+  capabilities.turnStart = true
+  capabilities.turnInterrupt = true
+  capabilities.threadRead = true
+  return {
+    executable: {
+      codexExecutable: "/absolute/codex",
+      codexExecutableRealPath: "/real/codex",
+      codexVersion: "codex-cli 0.131.0",
+      executableSelectionSource: "path",
+      launchAllowed: true,
+      discoveredCandidates: [],
+    },
+    protocolFingerprint: "fingerprint",
+    schemaCapabilities: capabilities,
+    capabilityMatrix: buildCapabilityMatrix(capabilities),
+  }
+}
 
 function handledCriticalState() {
   let state = applyQuotaObservation(createInitialState(), normalizeRateLimits(response(snapshot({
@@ -32,7 +56,9 @@ describe("状态输出", () => {
   })
 
   it("JSON 输出符合稳定 schema", () => {
-    const output = buildStatusOutput(handledCriticalState(), 10_100)
+    const state = handledCriticalState()
+    state.goalControl = "degraded"
+    const output = buildStatusOutput(state, 10_100, { runtimeContext: runtimeContext() })
 
     expect(output).toMatchObject({
       schemaVersion: 1,
@@ -54,6 +80,16 @@ describe("状态输出", () => {
       },
       turns: "ALLOWED",
       active: null,
+      executable: {
+        codexExecutable: "/absolute/codex",
+        codexExecutableRealPath: "/real/codex",
+        codexVersion: "codex-cli 0.131.0",
+        executableSelectionSource: "path",
+      },
+      protocolFingerprint: "fingerprint",
+      capabilities: expect.any(Object),
+      goalControl: "degraded",
+      runtimeChanges: [],
     })
   })
 

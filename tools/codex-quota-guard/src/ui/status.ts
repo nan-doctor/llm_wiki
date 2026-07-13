@@ -1,5 +1,8 @@
 import type { PersistedGuardState, TurnAdmission } from "../guard/state-machine.js"
 import type { NormalizedWindow, QuotaSeverity } from "../quota/types.js"
+import type { CapabilityMatrix } from "../runtime/capabilities.js"
+import type { RuntimeContext } from "../runtime/runtime-context.js"
+import type { RuntimeChange } from "../runtime/types.js"
 
 export interface GuardStatusOutput {
   schemaVersion: 1
@@ -30,11 +33,22 @@ export interface GuardStatusOutput {
   turns: TurnAdmission
   active: { threadId: string; turnId: string } | null
   limits: PersistedGuardState["limits"]
+  executable: {
+    codexExecutable: string
+    codexExecutableRealPath: string | null
+    codexVersion: string | null
+    executableSelectionSource: RuntimeContext["executable"]["executableSelectionSource"]
+  } | null
+  protocolFingerprint: string | null
+  capabilities: CapabilityMatrix | null
+  goalControl: PersistedGuardState["goalControl"]
+  runtimeChanges: RuntimeChange[]
 }
 
 export interface BuildStatusOptions {
   staleAfterMs?: number
   admission?: TurnAdmission
+  runtimeContext?: RuntimeContext
 }
 
 export function buildStatusOutput(
@@ -95,6 +109,22 @@ export function buildStatusOutput(
       ? { threadId: state.activeTurn.threadId, turnId: state.activeTurn.turnId }
       : null,
     limits: { ...state.limits },
+    executable: options.runtimeContext
+      ? {
+          codexExecutable: options.runtimeContext.executable.codexExecutable,
+          codexExecutableRealPath: options.runtimeContext.executable.codexExecutableRealPath,
+          codexVersion: options.runtimeContext.executable.codexVersion,
+          executableSelectionSource: options.runtimeContext.executable.executableSelectionSource,
+        }
+      : null,
+    protocolFingerprint: options.runtimeContext?.protocolFingerprint
+      ?? state.runtime.current?.protocolFingerprint
+      ?? null,
+    capabilities: structuredClone(
+      options.runtimeContext?.capabilityMatrix ?? state.runtime.capabilities,
+    ),
+    goalControl: state.goalControl,
+    runtimeChanges: structuredClone(state.runtime.changes),
   }
 }
 

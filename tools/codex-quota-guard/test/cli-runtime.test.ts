@@ -69,7 +69,11 @@ function setup() {
       return ({
       ok: true,
       status: "ok",
+      codexExecutable: "/selected/codex",
+      executableRealPath: "/real/selected/codex",
+      executableSelectionSource: "path",
       codexVersion: "codex-cli 0.131.0",
+      protocolFingerprint: "fingerprint",
       appServerHandshake: true,
       rateLimitsRead: true,
       fiveHourProtectionAvailable: true,
@@ -128,6 +132,18 @@ describe("executeCli", () => {
     expect(code).toBe(0)
     expect(test.calls).toEqual(["resolve:default", "controller", "start", "stop", "release"])
     expect(JSON.parse(test.output[0]).schemaVersion).toBe(1)
+    expect(JSON.parse(test.output[0])).toMatchObject({
+      executable: {
+        codexExecutable: "/selected/codex",
+        codexExecutableRealPath: "/real/selected/codex",
+        codexVersion: "codex-cli 0.131.0",
+        executableSelectionSource: "path",
+      },
+      protocolFingerprint: "fingerprint",
+      capabilities: expect.any(Object),
+      goalControl: "unavailable",
+      runtimeChanges: [],
+    })
   })
 
   it("run 只启动一个 turn 并等待完成", async () => {
@@ -159,6 +175,12 @@ describe("executeCli", () => {
     expect(code).toBe(0)
     expect(test.calls).toEqual(["resolve:default", "doctor:false"])
     expect(JSON.parse(test.output[0]).codexVersion).toBe("codex-cli 0.131.0")
+    expect(JSON.parse(test.output[0])).toMatchObject({
+      codexExecutable: "/selected/codex",
+      executableRealPath: "/real/selected/codex",
+      executableSelectionSource: "path",
+      protocolFingerprint: "fingerprint",
+    })
   })
 
   it("doctor 文本逐项显示协议能力矩阵", async () => {
@@ -168,6 +190,14 @@ describe("executeCli", () => {
 
     expect(code).toBe(0)
     expect(test.output[0]).toContain("Codex version: codex-cli 0.131.0 (TESTED)")
+    expect(test.output[0]).toContain("Codex executable: /selected/codex")
+    expect(test.output[0]).toContain("Executable real path: /real/selected/codex")
+    expect(test.output[0]).toContain("Selection source: path")
+    expect(test.output[0]).toContain("Protocol fingerprint: fingerprint")
+    expect(test.output[0]).toContain("Turn interrupt: schemaDetected")
+    expect(test.output[0]).toContain("Thread read: schemaDetected")
+    expect(test.output[0]).toContain("Goal resume: schemaDetected")
+    expect(test.output[0]).toContain("Server request handling: schemaDetected")
     expect(test.output[0]).toContain("turn/interrupt: schema=DETECTED · runtime=NOT_TESTED")
     expect(test.output[0]).toContain("Goal paused: schema=DETECTED · runtime=NOT_TESTED")
     expect(test.output[0]).toContain("background terminal clean: schema=DETECTED · runtime=NOT_TESTED")

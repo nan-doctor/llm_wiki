@@ -56,7 +56,7 @@ export async function executeCli(
   try {
     await controller.start()
     if (parsed.command === "status") {
-      writeStatus(controller, parsed.json, dependencies)
+      writeStatus(controller, parsed.json, dependencies, context)
       return 0
     }
 
@@ -99,7 +99,7 @@ export async function executeCli(
           : "turn 执行失败")
       }
     }
-    writeStatus(controller, parsed.json, dependencies)
+    writeStatus(controller, parsed.json, dependencies, context)
     return 0
   } finally {
     if (polling) clearInterval(polling)
@@ -122,29 +122,47 @@ function writeStatus(
   controller: CliController,
   json: boolean,
   dependencies: CliDependencies,
+  context: RuntimeContext,
 ): void {
   const status = controller.status()
   const output = buildStatusOutput(status.state, Date.now(), {
     admission: status.admission,
+    runtimeContext: context,
   })
   dependencies.writeOutput(json ? JSON.stringify(output, null, 2) : formatStatusText(output))
 }
 
 function formatDoctor(result: DoctorResult): string {
   const lines = [
+    `Codex executable: ${result.codexExecutable}`,
+    `Executable real path: ${result.executableRealPath ?? "UNKNOWN"}`,
+    `Selection source: ${result.executableSelectionSource}`,
     `Codex version: ${result.codexVersion ?? "UNKNOWN"} (${result.protocol.versionStatus.toUpperCase()})`,
+    `Protocol fingerprint: ${result.protocolFingerprint ?? "UNKNOWN"}`,
     `compatibility basis: ${result.protocol.compatibilityBasis}`,
     `app-server handshake: ${result.appServerHandshake ? "OK" : "FAILED"}`,
     `rate limits read: ${result.rateLimitsRead ? "OK" : "FAILED"}`,
     `five-hour protection: ${result.fiveHourProtectionAvailable ? "AVAILABLE" : "UNAVAILABLE"}`,
+    `Rate limits: ${result.capabilityMatrix.rateLimitsRead.status}`,
+    `Turn interrupt: ${result.capabilityMatrix.turnInterrupt.status}`,
+    `Thread read: ${result.capabilityMatrix.threadRead.status}`,
+    `Goal pause/resume: ${combinedCapabilityStatus(
+      result.capabilityMatrix.goalPaused.status,
+      result.capabilityMatrix.goalResume.status,
+    )}`,
+    `Goal resume: ${result.capabilityMatrix.goalResume.status}`,
+    `Server request handling: ${result.capabilityMatrix.serverRequestHandling.status}`,
     `account/rateLimits/read: ${formatCapability(result.capabilityMatrix.rateLimitsRead)}`,
     `account/rateLimits/updated: ${formatCapability(result.capabilityMatrix.rateLimitsUpdated)}`,
     `turn/start: ${formatCapability(result.capabilityMatrix.turnStart)}`,
     `turn/interrupt: ${formatCapability(result.capabilityMatrix.turnInterrupt)}`,
+    `thread/read: ${formatCapability(result.capabilityMatrix.threadRead)}`,
     `Goal get: ${formatCapability(result.capabilityMatrix.goalGet)}`,
     `Goal set: ${formatCapability(result.capabilityMatrix.goalSet)}`,
     `Goal paused: ${formatCapability(result.capabilityMatrix.goalPaused)}`,
+    `Goal resume: ${formatCapability(result.capabilityMatrix.goalResume)}`,
     `background terminal clean: ${formatCapability(result.capabilityMatrix.backgroundTerminalsClean)}`,
+    `server request handling: ${formatCapability(result.capabilityMatrix.serverRequestHandling)}`,
     `overall: ${result.status.toUpperCase()}`,
   ]
   if (result.liveCanary) {
@@ -155,6 +173,17 @@ function formatDoctor(result: DoctorResult): string {
   for (const warning of result.warnings) lines.push(`warning: ${warning}`)
   for (const error of result.errors) lines.push(`error: ${error}`)
   return lines.join("\n")
+}
+
+function combinedCapabilityStatus(
+  first: DoctorResult["capabilityMatrix"]["goalPaused"]["status"],
+  second: DoctorResult["capabilityMatrix"]["goalResume"]["status"],
+): string {
+  if (first === "failed" || second === "failed") return "failed"
+  if (first === "degraded" || second === "degraded") return "degraded"
+  if (first === "unavailable" || second === "unavailable") return "unavailable"
+  if (first === "runtimeVerified" && second === "runtimeVerified") return "runtimeVerified"
+  return "schemaDetected"
 }
 
 function formatHelp(): string {
