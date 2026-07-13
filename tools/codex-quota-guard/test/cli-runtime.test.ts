@@ -104,6 +104,7 @@ describe("executeCli", () => {
     expect(test.calls).toEqual([])
     expect(test.output[0]).toContain("codex-quota-guard run <提示>")
     expect(test.output[0]).toContain("--require-protection")
+    expect(test.output[0]).toContain("--codex-path <绝对路径>")
   })
 
   it("live canary 缺少确认变量时在启动 App Server 前拒绝", async () => {
