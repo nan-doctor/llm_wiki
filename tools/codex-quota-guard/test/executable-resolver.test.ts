@@ -126,7 +126,7 @@ describe("resolveCodexExecutable", () => {
   })
 
   it("配置优先于 PATH，且相对配置路径以项目根目录解析", async () => {
-    const configured = path.resolve("/repo", "tools/codex")
+    const configured = path.posix.resolve("/repo", "tools/codex")
     const dependencies = fakeDependencies({
       pathValue: "/path/bin",
       files: {
